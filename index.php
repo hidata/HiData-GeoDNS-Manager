@@ -3,8 +3,8 @@
 declare(strict_types=1);
 
 /**
- * HiData PowerDNS Manager
- * Single-file PHP panel for managing PowerDNS zones and RRsets remotely.
+ * HiData GeoDNS Manager
+ * Single-file PHP panel for managing PowerDNS zones and RRsets on the same host.
  *
  * Requirements:
  * - PHP 8.1+
@@ -32,11 +32,12 @@ if (!is_array($config)) {
 
 error_reporting(E_ALL);
 ini_set('display_errors', '0');
-date_default_timezone_set((string)($config['app']['timezone'] ?? 'UTC'));
+date_default_timezone_set((string)($config['app']['timezone'] ?? 'Asia/Tehran'));
+validateConfigOrFail($config);
 
 $security = $config['security'] ?? [];
 $sessionName = (string)($security['session_name'] ?? 'HIDATA_PDNS');
-$isHttps = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+$isHttps = isHttpsRequest($config);
 $cookieSecure = $isHttps && (bool)($security['cookie_secure'] ?? true);
 
 session_name($sessionName);
@@ -49,8 +50,9 @@ session_set_cookie_params([
     'samesite' => 'Lax',
 ]);
 session_start();
+enforceSessionTimeout($config);
 
-sendSecurityHeaders($config);
+sendSecurityHeaders($config, $isHttps);
 bootstrapStorage($config);
 
 if (!isClientIpAllowed($config)) {
@@ -66,7 +68,9 @@ if (($security['require_https'] ?? false) && !$isHttps) {
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 
-handleLogout();
+if (isset($_POST['action']) && $_POST['action'] === 'logout') {
+    handleLogout($config);
+}
 
 if (isset($_POST['action']) && $_POST['action'] === 'login') {
     handleLogin($config);
@@ -127,7 +131,51 @@ renderPage([
 ]);
 exit;
 
-function sendSecurityHeaders(array $config): void
+function validateConfigOrFail(array $config): void
+{
+    $errors = [];
+
+    if (trim((string)($config['auth']['username'] ?? '')) === '') {
+        $errors[] = 'auth.username is required.';
+    }
+
+    $passwordHash = (string)($config['auth']['password_hash'] ?? '');
+    if ($passwordHash === '') {
+        $errors[] = 'auth.password_hash is required.';
+    } elseif ((password_get_info($passwordHash)['algo'] ?? null) === null) {
+        $errors[] = 'auth.password_hash must be generated with password_hash().';
+    }
+
+    $baseUrl = trim((string)($config['pdns']['base_url'] ?? ''));
+    if ($baseUrl === '' || !filter_var($baseUrl, FILTER_VALIDATE_URL)) {
+        $errors[] = 'pdns.base_url must be a valid URL.';
+    }
+
+    $apiKey = trim((string)($config['pdns']['api_key'] ?? ''));
+    if ($apiKey === '' || $apiKey === 'CHANGE_ME') {
+        $errors[] = 'pdns.api_key must be configured.';
+    }
+
+    if ($baseUrl !== '' && ($config['pdns']['verify_tls'] ?? true) === false) {
+        $host = (string)(parse_url($baseUrl, PHP_URL_HOST) ?? '');
+        if (!in_array($host, ['127.0.0.1', '::1', 'localhost'], true)) {
+            $errors[] = 'pdns.verify_tls may only be disabled for localhost/loopback URLs.';
+        }
+    }
+
+    foreach (['backup_dir', 'audit_log', 'rate_limit_file'] as $storageKey) {
+        if (empty($config['storage'][$storageKey])) {
+            $errors[] = 'storage.' . $storageKey . ' is required.';
+        }
+    }
+
+    if ($errors !== []) {
+        http_response_code(500);
+        renderFatalPage('Configuration error', 'The application configuration is incomplete or unsafe for startup.', $errors);
+    }
+}
+
+function sendSecurityHeaders(array $config, bool $isHttps): void
 {
     $security = $config['security'] ?? [];
     header('Content-Type: text/html; charset=UTF-8');
@@ -152,7 +200,7 @@ function sendSecurityHeaders(array $config): void
     ];
     header('Content-Security-Policy: ' . implode('; ', $csp));
 
-    if (($security['hsts'] ?? false) && (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')) {
+    if (($security['hsts'] ?? false) && $isHttps) {
         header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
     }
 }
@@ -173,32 +221,147 @@ function bootstrapStorage(array $config): void
 
     foreach ($dirs as $dir) {
         if (!is_dir($dir)) {
-            @mkdir($dir, 0750, true);
+            if (!@mkdir($dir, 0750, true) && !is_dir($dir)) {
+                renderFatalPage('Storage error', 'Failed to create a required storage directory.', [$dir]);
+            }
+        }
+        if (!is_writable($dir)) {
+            renderFatalPage('Storage error', 'A required storage directory is not writable by PHP.', [$dir]);
         }
     }
 }
 
-function renderFatalPage(string $title, string $message): never
+function renderFatalPage(string $title, string $message, array $details = []): never
 {
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
     echo '<title>' . h($title) . '</title>';
-    echo '<style>body{font-family:Inter,Arial,sans-serif;background:#0b1220;color:#e5eefb;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}.box{max-width:680px;background:#111a2e;border:1px solid #22314f;padding:32px;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)}h1{margin:0 0 12px;font-size:28px}p{margin:0;color:#a7badc;line-height:1.7}</style></head><body><div class="box"><h1>' . h($title) . '</h1><p>' . h($message) . '</p></div></body></html>';
+    echo '<style>body{font-family:Inter,Arial,sans-serif;background:#0b1220;color:#e5eefb;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}.box{max-width:680px;background:#111a2e;border:1px solid #22314f;padding:32px;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)}h1{margin:0 0 12px;font-size:28px}p{margin:0;color:#a7badc;line-height:1.7}ul{margin:18px 0 0;padding-left:20px;color:#c8d8f6;line-height:1.7}</style></head><body><div class="box"><h1>' . h($title) . '</h1><p>' . h($message) . '</p>';
+    if ($details !== []) {
+        echo '<ul>';
+        foreach ($details as $detail) {
+            echo '<li>' . h((string)$detail) . '</li>';
+        }
+        echo '</ul>';
+    }
+    echo '</div></body></html>';
     exit;
 }
 
-function clientIp(): string
+function requestHeader(string $key): string
 {
-    foreach (['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR'] as $key) {
-        if (!empty($_SERVER[$key])) {
-            $value = trim((string)$_SERVER[$key]);
-            if ($key === 'HTTP_X_FORWARDED_FOR') {
-                $parts = explode(',', $value);
-                $value = trim($parts[0]);
-            }
+    return trim((string)($_SERVER[$key] ?? ''));
+}
+
+function isHttpsRequest(array $config): bool
+{
+    if (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') {
+        return true;
+    }
+
+    if ((string)($_SERVER['SERVER_PORT'] ?? '') === '443') {
+        return true;
+    }
+
+    if (!requestIsFromTrustedProxy($config)) {
+        return false;
+    }
+
+    $forwardedProto = strtolower(requestHeader('HTTP_X_FORWARDED_PROTO'));
+    if ($forwardedProto !== '') {
+        return trim(explode(',', $forwardedProto)[0]) === 'https';
+    }
+
+    return str_contains(strtolower(requestHeader('HTTP_FORWARDED')), 'proto=https');
+}
+
+function requestIsFromTrustedProxy(array $config): bool
+{
+    if (($config['security']['trust_proxy_headers'] ?? false) !== true) {
+        return false;
+    }
+
+    $remoteAddr = requestHeader('REMOTE_ADDR');
+    if ($remoteAddr === '') {
+        return false;
+    }
+
+    $trustedProxies = $config['security']['trusted_proxies'] ?? [];
+    return is_array($trustedProxies) && ipMatchesList($remoteAddr, $trustedProxies);
+}
+
+function clientIp(array $config): string
+{
+    $remoteAddr = requestHeader('REMOTE_ADDR');
+    if (!requestIsFromTrustedProxy($config)) {
+        return $remoteAddr !== '' ? $remoteAddr : 'unknown';
+    }
+
+    foreach (['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP'] as $header) {
+        $value = requestHeader($header);
+        if ($value === '') {
+            continue;
+        }
+        if ($header === 'HTTP_X_FORWARDED_FOR') {
+            $value = trim(explode(',', $value)[0]);
+        }
+        if (filter_var($value, FILTER_VALIDATE_IP)) {
             return $value;
         }
     }
-    return 'unknown';
+
+    return $remoteAddr !== '' ? $remoteAddr : 'unknown';
+}
+
+function ipMatchesList(string $ip, array $rules): bool
+{
+    foreach ($rules as $rule) {
+        $rule = trim((string)$rule);
+        if ($rule === '') {
+            continue;
+        }
+        if (str_contains($rule, '/')) {
+            if (ipInCidr($ip, $rule)) {
+                return true;
+            }
+            continue;
+        }
+        if ($rule === $ip) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function ipInCidr(string $ip, string $cidr): bool
+{
+    [$subnet, $prefix] = array_pad(explode('/', $cidr, 2), 2, null);
+    if ($subnet === null || $prefix === null || !ctype_digit($prefix)) {
+        return false;
+    }
+
+    $ipBin = @inet_pton($ip);
+    $subnetBin = @inet_pton($subnet);
+    if ($ipBin === false || $subnetBin === false || strlen($ipBin) !== strlen($subnetBin)) {
+        return false;
+    }
+
+    $prefixInt = (int)$prefix;
+    if ($prefixInt < 0 || $prefixInt > strlen($ipBin) * 8) {
+        return false;
+    }
+    $fullBytes = intdiv($prefixInt, 8);
+    $remainingBits = $prefixInt % 8;
+
+    if ($fullBytes > 0 && substr($ipBin, 0, $fullBytes) !== substr($subnetBin, 0, $fullBytes)) {
+        return false;
+    }
+
+    if ($remainingBits === 0) {
+        return true;
+    }
+
+    $mask = (0xFF << (8 - $remainingBits)) & 0xFF;
+    return (ord($ipBin[$fullBytes]) & $mask) === (ord($subnetBin[$fullBytes]) & $mask);
 }
 
 function isClientIpAllowed(array $config): bool
@@ -207,13 +370,7 @@ function isClientIpAllowed(array $config): bool
     if (!is_array($allowed) || $allowed === []) {
         return true;
     }
-    $ip = clientIp();
-    foreach ($allowed as $allowedIp) {
-        if (trim((string)$allowedIp) === $ip) {
-            return true;
-        }
-    }
-    return false;
+    return ipMatchesList(clientIp($config), $allowed);
 }
 
 function handleLogin(array $config): never
@@ -222,12 +379,13 @@ function handleLogin(array $config): never
         redirect('index.php');
     }
 
+    verifyCsrfOrFail();
     $username = trim((string)($_POST['username'] ?? ''));
     $password = (string)($_POST['password'] ?? '');
     $auth = $config['auth'] ?? [];
 
     $rate = loadRateLimit($config);
-    $ip = clientIp();
+    $ip = clientIp($config);
     $entry = $rate[$ip] ?? ['fails' => 0, 'lock_until' => 0];
     if (($entry['lock_until'] ?? 0) > time()) {
         $_SESSION['login_error'] = 'Too many failed login attempts. Please wait and try again.';
@@ -263,15 +421,44 @@ function handleLogin(array $config): never
     redirect('index.php');
 }
 
-function handleLogout(): void
+function handleLogout(array $config): never
 {
-    if (isset($_GET['logout']) && $_GET['logout'] === '1') {
-        session_unset();
-        session_destroy();
-        session_start();
-        $_SESSION['flash'] = ['type' => 'success', 'message' => 'Signed out successfully.'];
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         redirect('index.php');
     }
+    verifyCsrfOrFail();
+    audit($config, 'logout', []);
+    resetSession();
+    $_SESSION['flash'] = ['type' => 'success', 'message' => 'Signed out successfully.'];
+    redirect('index.php');
+}
+
+function enforceSessionTimeout(array $config): void
+{
+    if (empty($_SESSION['auth']['username'])) {
+        return;
+    }
+
+    $auth = $_SESSION['auth'];
+    $now = time();
+    $idleTimeout = (int)($config['auth']['session_idle_timeout'] ?? 3600);
+    $absoluteTimeout = (int)($config['auth']['session_absolute_timeout'] ?? 43200);
+
+    if (
+        ($idleTimeout > 0 && $now - (int)($auth['last_seen'] ?? 0) > $idleTimeout) ||
+        ($absoluteTimeout > 0 && $now - (int)($auth['logged_in_at'] ?? 0) > $absoluteTimeout)
+    ) {
+        resetSession();
+        $_SESSION['flash'] = ['type' => 'info', 'message' => 'Your session expired. Please sign in again.'];
+        redirect('index.php');
+    }
+}
+
+function resetSession(): void
+{
+    session_unset();
+    session_destroy();
+    session_start();
 }
 
 function requireAuth(): void
@@ -290,13 +477,13 @@ function renderLoginPage(): never
     unset($_SESSION['flash']);
 
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-    echo '<title>HiData PowerDNS Manager</title>';
+    echo '<title>HiData GeoDNS Manager</title>';
     echo '<style>' . baseCss() . loginCss() . '</style>';
     echo '</head><body class="login-body">';
     echo '<div class="login-shell">';
     echo '<div class="login-brand">';
     echo '<div class="brand-mark">Hi</div>';
-    echo '<div><div class="brand-title">HiData PowerDNS Manager</div><div class="brand-subtitle">Secure remote DNS control panel</div></div>';
+    echo '<div><div class="brand-title">HiData GeoDNS Manager</div><div class="brand-subtitle">Secure PowerDNS control panel</div></div>';
     echo '</div>';
     echo '<div class="login-card">';
     echo '<h1>Sign in</h1>';
@@ -308,6 +495,7 @@ function renderLoginPage(): never
         echo '<div class="flash flash-danger">' . h((string)$loginError) . '</div>';
     }
     echo '<form method="post" autocomplete="off">';
+    echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
     echo '<input type="hidden" name="action" value="login">';
     echo '<label>Username</label><input class="input" type="text" name="username" required autofocus>';
     echo '<label>Password</label><input class="input" type="password" name="password" required>';
@@ -341,27 +529,38 @@ function handleMutation(array $config): never
     }
     verifyCsrfOrFail();
 
+    $action = (string)($_POST['action'] ?? '');
     if (($config['features']['read_only'] ?? false) === true) {
         $_SESSION['flash'] = ['type' => 'danger', 'message' => 'Read-only mode is enabled. Changes are not allowed.'];
-        redirect(backUrl());
-    }
-
-    $action = (string)($_POST['action'] ?? '');
-    $zoneName = ensureTrailingDot((string)($_POST['zone_name'] ?? ''));
-    if ($zoneName === '.') {
-        $_SESSION['flash'] = ['type' => 'danger', 'message' => 'Invalid zone name.'];
-        redirect('index.php');
+        redirect(mutationRedirectTarget());
     }
 
     try {
-        $zone = fetchZone($config, $zoneName);
-        guardWritableZone($config, $zone);
-
         switch ($action) {
+            case 'create_zone':
+                guardZoneCreationAllowed($config);
+                $createdZone = createZoneFromPost($config);
+                $_SESSION['flash'] = ['type' => 'success', 'message' => 'Zone created successfully.'];
+                redirect(zoneUrl((string)$createdZone['name']));
+
+            case 'delete_zone':
+                guardZoneDeletionAllowed($config);
+                $zoneName = requirePostedZoneName();
+                $zone = fetchZone($config, $zoneName);
+                guardWritableZone($config, $zone);
+                backupZoneSnapshot($config, (string)$zone['id'], 'delete');
+                pdnsRequest($config, 'DELETE', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']));
+                audit($config, 'delete_zone', ['zone' => $zone['name']]);
+                $_SESSION['flash'] = ['type' => 'success', 'message' => 'Zone deleted successfully.'];
+                redirect('index.php');
+
             case 'add_rrset':
             case 'update_rrset':
+                $zoneName = requirePostedZoneName();
+                $zone = fetchZone($config, $zoneName);
+                guardWritableZone($config, $zone);
                 $payload = buildRrsetPayloadFromPost($zone['name']);
-                backupZoneBeforeWrite($config, $zone['id']);
+                backupZoneSnapshot($config, (string)$zone['id'], 'change');
                 pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
                     'rrsets' => [$payload],
                 ]);
@@ -371,12 +570,15 @@ function handleMutation(array $config): never
                 break;
 
             case 'delete_rrset':
+                $zoneName = requirePostedZoneName();
+                $zone = fetchZone($config, $zoneName);
+                guardWritableZone($config, $zone);
                 $name = fqdnFromInput((string)($_POST['name'] ?? ''), $zone['name']);
                 $type = strtoupper(trim((string)($_POST['type'] ?? '')));
                 if ($type === '') {
                     throw new RuntimeException('Record type is required for deletion.');
                 }
-                backupZoneBeforeWrite($config, $zone['id']);
+                backupZoneSnapshot($config, (string)$zone['id'], 'change');
                 pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
                     'rrsets' => [[
                         'name' => $name,
@@ -390,8 +592,10 @@ function handleMutation(array $config): never
                 break;
 
             case 'rectify_zone':
+                $zoneName = requirePostedZoneName();
+                $zone = fetchZone($config, $zoneName);
                 guardRectifyAllowed($zone);
-                pdnsRequest($config, 'PUT', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']) . '/rectify', []);
+                pdnsRequest($config, 'PUT', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']) . '/rectify');
                 audit($config, 'rectify_zone', ['zone' => $zone['name']]);
                 $_SESSION['flash'] = ['type' => 'success', 'message' => 'Zone rectified successfully.'];
                 break;
@@ -403,7 +607,113 @@ function handleMutation(array $config): never
         $_SESSION['flash'] = ['type' => 'danger', 'message' => $e->getMessage()];
     }
 
-    redirect('index.php?zone=' . urlencode(rtrim($zoneName, '.')));
+    redirect(mutationRedirectTarget());
+}
+
+function guardZoneCreationAllowed(array $config): void
+{
+    if (($config['features']['allow_zone_create'] ?? true) !== true) {
+        throw new RuntimeException('Zone creation is disabled in this panel.');
+    }
+}
+
+function guardZoneDeletionAllowed(array $config): void
+{
+    if (($config['features']['allow_zone_delete'] ?? true) !== true) {
+        throw new RuntimeException('Zone deletion is disabled in this panel.');
+    }
+}
+
+function requirePostedZoneName(): string
+{
+    $zoneName = ensureTrailingDot((string)($_POST['zone_name'] ?? ''));
+    if ($zoneName === '.') {
+        throw new RuntimeException('A valid zone name is required.');
+    }
+    return $zoneName;
+}
+
+function mutationRedirectTarget(): string
+{
+    $zoneName = trim((string)($_POST['zone_name'] ?? ''));
+    if ($zoneName === '') {
+        return 'index.php';
+    }
+    return zoneUrl($zoneName);
+}
+
+function zoneUrl(string $zoneName): string
+{
+    return 'index.php?zone=' . urlencode(rtrim(ensureTrailingDot($zoneName), '.'));
+}
+
+function createZoneFromPost(array $config): array
+{
+    $zoneName = requirePostedZoneName();
+    $kind = canonicalZoneKind((string)($_POST['zone_kind'] ?? 'Native'));
+    $payload = [
+        'name' => $zoneName,
+        'kind' => $kind,
+    ];
+
+    $account = trim((string)($_POST['account'] ?? ''));
+    if ($account !== '') {
+        $payload['account'] = $account;
+    }
+
+    if (isSecondaryLikeKind($kind)) {
+        $masters = parseTextareaLines((string)($_POST['masters'] ?? ''));
+        if ($masters === []) {
+            throw new RuntimeException('Secondary-style zones require at least one master server.');
+        }
+        $payload['masters'] = $masters;
+    } else {
+        $nameservers = array_map('normalizeHostnameTarget', parseTextareaLines((string)($_POST['nameservers'] ?? '')));
+        if ($nameservers === []) {
+            throw new RuntimeException('Provide at least one authoritative nameserver for the new zone.');
+        }
+        $payload['nameservers'] = $nameservers;
+        $payload['dnssec'] = !empty($_POST['dnssec']);
+        $payload['api_rectify'] = !empty($_POST['api_rectify']);
+    }
+
+    $zone = pdnsRequest($config, 'POST', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones', $payload);
+    if (!is_array($zone) || empty($zone['name'])) {
+        throw new RuntimeException('The PowerDNS API did not return a valid zone after creation.');
+    }
+
+    audit($config, 'create_zone', ['zone' => $zone['name'], 'kind' => $kind]);
+    return $zone;
+}
+
+function canonicalZoneKind(string $kind): string
+{
+    return match (strtoupper(trim($kind))) {
+        'NATIVE' => 'Native',
+        'MASTER', 'PRIMARY' => 'Master',
+        'SLAVE', 'SECONDARY' => 'Slave',
+        'PRODUCER' => 'Producer',
+        'CONSUMER' => 'Consumer',
+        default => throw new RuntimeException('Unsupported zone kind.'),
+    };
+}
+
+function isSecondaryLikeKind(string $kind): bool
+{
+    return in_array(strtoupper($kind), ['SLAVE', 'SECONDARY', 'CONSUMER'], true);
+}
+
+function parseTextareaLines(string $raw): array
+{
+    $lines = preg_split('/\r\n|\r|\n/', trim($raw)) ?: [];
+    $values = [];
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line !== '') {
+            $values[] = $line;
+        }
+    }
+    return $values;
 }
 
 function buildRrsetPayloadFromPost(string $zoneName): array
@@ -635,11 +945,14 @@ function maybeRectify(array $config, array $zone): void
     if (($config['features']['default_auto_rectify'] ?? false) !== true) {
         return;
     }
+    if (!empty($zone['api_rectify'])) {
+        return;
+    }
     guardRectifyAllowed($zone);
-    pdnsRequest($config, 'PUT', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']) . '/rectify', []);
+    pdnsRequest($config, 'PUT', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']) . '/rectify');
 }
 
-function backupZoneBeforeWrite(array $config, string $zoneId): void
+function backupZoneSnapshot(array $config, string $zoneId, string $reason = 'change'): void
 {
     if (($config['features']['backup_before_write'] ?? true) !== true) {
         return;
@@ -650,9 +963,19 @@ function backupZoneBeforeWrite(array $config, string $zoneId): void
     if ($backupDir === '') {
         throw new RuntimeException('Backup directory is not configured.');
     }
-    $filename = $backupDir . '/' . preg_replace('/[^A-Za-z0-9._-]+/', '_', rtrim($zoneId, '.')) . '__' . date('Ymd_His') . '.zone';
+    $safeZoneId = preg_replace('/[^A-Za-z0-9._-]+/', '_', rtrim($zoneId, '.'));
+    $filename = $backupDir . '/' . $safeZoneId . '__' . preg_replace('/[^A-Za-z0-9._-]+/', '_', $reason) . '__' . date('Ymd_His') . '.zone';
     if (@file_put_contents($filename, (string)$export, LOCK_EX) === false) {
         throw new RuntimeException('Failed to save the pre-change zone backup.');
+    }
+
+    $maxBackups = (int)($config['features']['max_backups_per_zone'] ?? 0);
+    if ($maxBackups > 0) {
+        $files = glob($backupDir . '/' . $safeZoneId . '__*.zone') ?: [];
+        rsort($files, SORT_STRING);
+        foreach (array_slice($files, $maxBackups) as $file) {
+            @unlink($file);
+        }
     }
 }
 
@@ -756,7 +1079,7 @@ function audit(array $config, string $action, array $context = []): void
         'ts' => gmdate('c'),
         'action' => $action,
         'user' => $_SESSION['auth']['username'] ?? 'unknown',
-        'ip' => clientIp(),
+        'ip' => clientIp($config),
         'context' => $context,
     ];
     @file_put_contents($file, json_encode($entry, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . PHP_EOL, FILE_APPEND | LOCK_EX);
@@ -825,6 +1148,44 @@ function maskSecret(string $value): string
     return substr($value, 0, 4) . str_repeat('*', max(4, strlen($value) - 8)) . substr($value, -4);
 }
 
+function canCreateZones(array $config): bool
+{
+    return ($config['features']['read_only'] ?? false) !== true
+        && ($config['features']['allow_zone_create'] ?? true) === true;
+}
+
+function canDeleteZones(array $config): bool
+{
+    return ($config['features']['read_only'] ?? false) !== true
+        && ($config['features']['allow_zone_delete'] ?? true) === true;
+}
+
+function canModifyZone(array $config, ?array $zone): bool
+{
+    if ($zone === null || ($config['features']['read_only'] ?? false) === true) {
+        return false;
+    }
+    try {
+        guardWritableZone($config, $zone);
+        return true;
+    } catch (Throwable) {
+        return false;
+    }
+}
+
+function canRectifyZone(array $config, ?array $zone): bool
+{
+    if ($zone === null || ($config['features']['read_only'] ?? false) === true) {
+        return false;
+    }
+    try {
+        guardRectifyAllowed($zone);
+        return true;
+    } catch (Throwable) {
+        return false;
+    }
+}
+
 function renderPage(array $data): void
 {
     $config = $data['config'];
@@ -842,16 +1203,21 @@ function renderPage(array $data): void
         return mb_stripos((string)($zone['name'] ?? ''), $zoneSearch) !== false;
     }));
 
+    $canCreateZones = canCreateZones($config);
+    $canDeleteCurrentZone = canDeleteZones($config) && canModifyZone($config, $zoneDetails);
+    $canModifyCurrentZone = canModifyZone($config, $zoneDetails);
+    $canRectifyCurrentZone = canRectifyZone($config, $zoneDetails);
+
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-    echo '<title>' . h((string)($config['app']['name'] ?? 'HiData PowerDNS Manager')) . '</title>';
+    echo '<title>' . h((string)($config['app']['name'] ?? 'HiData GeoDNS Manager')) . '</title>';
     echo '<style>' . baseCss() . appCss() . '</style>';
     echo '</head><body>';
     echo '<div class="layout">';
     echo '<aside class="sidebar">';
     echo '<div class="brand">';
     echo '<div class="brand-logo">Hi</div>';
-    echo '<div><div class="brand-name">' . h((string)($config['app']['name'] ?? 'HiData PowerDNS Manager')) . '</div>';
-    echo '<div class="brand-tag">Professional DNS control panel</div></div>';
+    echo '<div><div class="brand-name">' . h((string)($config['app']['name'] ?? 'HiData GeoDNS Manager')) . '</div>';
+    echo '<div class="brand-tag">PowerDNS zone and RRset manager</div></div>';
     echo '</div>';
 
     echo '<form class="search-form" method="get">';
@@ -880,6 +1246,7 @@ function renderPage(array $data): void
     echo '<div class="config-row"><span>API endpoint</span><strong>' . h((string)($config['pdns']['base_url'] ?? '')) . '</strong></div>';
     echo '<div class="config-row"><span>Server ID</span><strong>' . h((string)($config['pdns']['server_id'] ?? '')) . '</strong></div>';
     echo '<div class="config-row"><span>API key</span><strong>' . h(maskSecret((string)($config['pdns']['api_key'] ?? ''))) . '</strong></div>';
+    echo '<div class="config-row"><span>Client IP</span><strong>' . h(clientIp($config)) . '</strong></div>';
     echo '<div class="config-row"><span>Mode</span><strong>' . (($config['features']['read_only'] ?? false) ? 'Read-only' : 'Read / Write') . '</strong></div>';
     echo '</div>';
 
@@ -887,12 +1254,19 @@ function renderPage(array $data): void
     echo '<main class="content">';
     echo '<div class="topbar">';
     echo '<div>';
-    echo '<div class="eyebrow">HiData brand UI</div>';
+    echo '<div class="eyebrow">HiData GeoDNS</div>';
     echo '<h1 class="page-title">' . ($currentZone ? h(rtrim((string)$currentZone['name'], '.')) : 'PowerDNS Dashboard') . '</h1>';
     echo '</div>';
     echo '<div class="top-actions">';
+    if ($canCreateZones) {
+        echo '<a class="btn btn-primary" href="#" onclick="openModal(\'zoneCreateModal\');return false;">New zone</a>';
+    }
     echo '<span class="user-chip">' . h((string)($_SESSION['auth']['username'] ?? 'admin')) . '</span>';
-    echo '<a class="btn btn-ghost" href="?logout=1">Sign out</a>';
+    echo '<form method="post" class="inline-form">';
+    echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
+    echo '<input type="hidden" name="action" value="logout">';
+    echo '<button class="btn btn-ghost" type="submit">Sign out</button>';
+    echo '</form>';
     echo '</div>';
     echo '</div>';
 
@@ -901,8 +1275,8 @@ function renderPage(array $data): void
     if (!$currentZone || !$zoneDetails) {
         echo '<section class="panel hero">';
         echo '<div class="hero-copy">';
-        echo '<h2>Professional remote PowerDNS management</h2>';
-        echo '<p>Browse zones from the left, inspect RRsets, add or edit records, export zones, and optionally auto-rectify changes with audit logging and pre-change backups.</p>';
+        echo '<h2>Manage authoritative DNS on the same host as PowerDNS</h2>';
+        echo '<p>Create zones, inspect RRsets, export backups, and safely update records through the local PowerDNS API with audit logging and automatic pre-change exports.</p>';
         echo '</div>';
         echo '<div class="hero-grid">';
         echo '<div class="stat-card"><span>Zones</span><strong>' . count($zones) . '</strong></div>';
@@ -910,6 +1284,9 @@ function renderPage(array $data): void
         echo '<div class="stat-card"><span>Backups</span><strong>' . (($config['features']['backup_before_write'] ?? false) ? 'Enabled' : 'Disabled') . '</strong></div>';
         echo '</div>';
         echo '</section>';
+        if ($canCreateZones) {
+            echo buildCreateZoneModal();
+        }
         echo '</main></div>';
         echo modalScripts();
         echo '</body></html>';
@@ -919,7 +1296,7 @@ function renderPage(array $data): void
     echo '<section class="panel zone-header">';
     echo '<div class="zone-title-wrap">';
     echo '<div class="zone-title">' . h(rtrim((string)$zoneDetails['name'], '.')) . '</div>';
-    echo '<div class="zone-subtitle">Serial ' . h((string)($zoneDetails['serial'] ?? '-')) . ' · Edited serial ' . h((string)($zoneDetails['edited_serial'] ?? '-')) . '</div>';
+    echo '<div class="zone-subtitle">Serial ' . h((string)($zoneDetails['serial'] ?? '-')) . ' | Edited serial ' . h((string)($zoneDetails['edited_serial'] ?? '-')) . '</div>';
     echo '</div>';
     echo '<div class="zone-badges">';
     echo '<span class="pill">' . h((string)($zoneDetails['kind'] ?? 'Unknown')) . '</span>';
@@ -927,14 +1304,26 @@ function renderPage(array $data): void
     echo '<span class="pill">API Rectify ' . (!empty($zoneDetails['api_rectify']) ? 'On' : 'Off') . '</span>';
     echo '</div>';
     echo '<div class="zone-actions">';
-    echo '<a class="btn btn-primary" href="#" onclick="openModal(\'addModal\');return false;">Add record</a>';
+    if ($canModifyCurrentZone) {
+        echo '<a class="btn btn-primary" href="#" onclick="openModal(\'addModal\');return false;">Add record</a>';
+    }
     echo '<a class="btn btn-ghost" href="?download=zone&amp;zone=' . urlencode(rtrim((string)$zoneDetails['name'], '.')) . '">Export zone</a>';
-    echo '<form method="post" class="inline-form" onsubmit="return confirm(\'Rectify this zone now?\')">';
-    echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
-    echo '<input type="hidden" name="action" value="rectify_zone">';
-    echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
-    echo '<button class="btn btn-ghost" type="submit">Rectify</button>';
-    echo '</form>';
+    if ($canRectifyCurrentZone) {
+        echo '<form method="post" class="inline-form" onsubmit="return confirm(\'Rectify this zone now?\')">';
+        echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
+        echo '<input type="hidden" name="action" value="rectify_zone">';
+        echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
+        echo '<button class="btn btn-ghost" type="submit">Rectify</button>';
+        echo '</form>';
+    }
+    if ($canDeleteCurrentZone) {
+        echo '<form method="post" class="inline-form" onsubmit="return confirm(\'Delete this zone and all its records?\')">';
+        echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
+        echo '<input type="hidden" name="action" value="delete_zone">';
+        echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
+        echo '<button class="btn btn-danger" type="submit">Delete zone</button>';
+        echo '</form>';
+    }
     echo '</div>';
     echo '</section>';
 
@@ -975,16 +1364,19 @@ function renderPage(array $data): void
             }
             echo '</div></td>';
             echo '<td><div class="action-stack">';
-            echo '<a class="btn btn-small btn-ghost" href="#" data-edit=
-"' . $jsPayload . '" onclick="fillEditModal(this.dataset.edit);openModal(\'editModal\');return false;">Edit</a>';
-            echo '<form method="post" onsubmit="return confirm(\'Delete this entire RRset?\')">';
-            echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
-            echo '<input type="hidden" name="action" value="delete_rrset">';
-            echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
-            echo '<input type="hidden" name="name" value="' . h(displayRelativeName((string)($rrset['name'] ?? ''), (string)$zoneDetails['name'])) . '">';
-            echo '<input type="hidden" name="type" value="' . h((string)($rrset['type'] ?? '')) . '">';
-            echo '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
-            echo '</form>';
+            if ($canModifyCurrentZone) {
+                echo '<a class="btn btn-small btn-ghost" href="#" data-edit="' . $jsPayload . '" onclick="fillEditModal(this.dataset.edit);openModal(\'editModal\');return false;">Edit</a>';
+                echo '<form method="post" onsubmit="return confirm(\'Delete this entire RRset?\')">';
+                echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
+                echo '<input type="hidden" name="action" value="delete_rrset">';
+                echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
+                echo '<input type="hidden" name="name" value="' . h(displayRelativeName((string)($rrset['name'] ?? ''), (string)$zoneDetails['name'])) . '">';
+                echo '<input type="hidden" name="type" value="' . h((string)($rrset['type'] ?? '')) . '">';
+                echo '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
+                echo '</form>';
+            } else {
+                echo '<span class="small muted">Writes disabled for this zone.</span>';
+            }
             echo '</div></td>';
             echo '</tr>';
         }
@@ -992,8 +1384,13 @@ function renderPage(array $data): void
     }
     echo '</section>';
 
-    echo buildAddModal((string)$zoneDetails['name']);
-    echo buildEditModal((string)$zoneDetails['name']);
+    if ($canCreateZones) {
+        echo buildCreateZoneModal();
+    }
+    if ($canModifyCurrentZone) {
+        echo buildAddModal((string)$zoneDetails['name']);
+        echo buildEditModal((string)$zoneDetails['name']);
+    }
 
     echo '</main></div>';
     echo modalScripts();
@@ -1002,12 +1399,27 @@ function renderPage(array $data): void
 
 function buildAddModal(string $zoneName): string
 {
-    return '<div class="modal" id="addModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Add RRset</h3><button class="icon-btn" onclick="closeModal(\'addModal\')">×</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="add_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Name</label><input class="input" name="name" value="@" placeholder="@ or subdomain" required></div><div><label>Type</label><select class="input" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" name="ttl" value="300" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Use one value per line for multi-value RRsets.</div></div></div><label>Content</label><textarea class="textarea" name="content" rows="8" placeholder="185.112.35.197 or 10 mail.example.com." required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'addModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create RRset</button></div></form></div></div>';
+    return '<div class="modal" id="addModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Add RRset</h3><button class="icon-btn" type="button" onclick="closeModal(\'addModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="add_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Name</label><input class="input" name="name" value="@" placeholder="@ or subdomain" required></div><div><label>Type</label><select class="input" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" name="ttl" value="300" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Use one value per line for multi-value RRsets.</div></div></div><label>Content</label><textarea class="textarea" name="content" rows="8" placeholder="185.112.35.197 or 10 mail.example.com." required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'addModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create RRset</button></div></form></div></div>';
 }
 
 function buildEditModal(string $zoneName): string
 {
-    return '<div class="modal" id="editModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit RRset</h3><button class="icon-btn" onclick="closeModal(\'editModal\')">×</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Name</label><input class="input" id="edit_name" name="name" required></div><div><label>Type</label><select class="input" id="edit_type" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" id="edit_ttl" name="ttl" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Editing replaces the whole RRset for this name and type.</div></div></div><label>Content</label><textarea class="textarea" id="edit_content" name="content" rows="8" required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'editModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div></form></div></div>';
+    return '<div class="modal" id="editModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit RRset</h3><button class="icon-btn" type="button" onclick="closeModal(\'editModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Name</label><input class="input" id="edit_name" name="name" required></div><div><label>Type</label><select class="input" id="edit_type" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" id="edit_ttl" name="ttl" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Editing replaces the whole RRset for this name and type.</div></div></div><label>Content</label><textarea class="textarea" id="edit_content" name="content" rows="8" required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'editModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div></form></div></div>';
+}
+
+function buildCreateZoneModal(): string
+{
+    return '<div class="modal" id="zoneCreateModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Create zone</h3><button class="icon-btn" type="button" onclick="closeModal(\'zoneCreateModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_zone"><div class="grid-two"><div><label>Zone name</label><input class="input" name="zone_name" placeholder="example.com" required></div><div><label>Zone kind</label><select class="input" id="zone_kind" name="zone_kind" onchange="toggleZoneKindFields(this.value)">' . zoneKindOptions() . '</select></div><div id="zone_nameservers_field"><label>Nameservers</label><textarea class="textarea" name="nameservers" rows="5" placeholder="ns1.example.com.&#10;ns2.example.com." required></textarea></div><div id="zone_masters_field" style="display:none"><label>Masters</label><textarea class="textarea" name="masters" rows="5" placeholder="192.0.2.10&#10;192.0.2.11"></textarea></div><div><label>Account</label><input class="input" name="account" placeholder="Optional owner/account label"></div><div><label>Zone options</label><div class="hint"><label class="check-row"><input type="checkbox" name="dnssec" checked> Enable DNSSEC support</label><label class="check-row"><input type="checkbox" name="api_rectify" checked> Enable API rectify</label></div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'zoneCreateModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create zone</button></div></form></div></div>';
+}
+
+function zoneKindOptions(): string
+{
+    $options = ['Native', 'Master', 'Slave', 'Producer', 'Consumer'];
+    $html = '';
+    foreach ($options as $option) {
+        $html .= '<option value="' . h($option) . '">' . h($option) . '</option>';
+    }
+    return $html;
 }
 
 function recordTypeOptions(): string
@@ -1046,6 +1458,8 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .input:focus,.textarea:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 4px rgba(21,184,255,.12)}
 .textarea{resize:vertical;min-height:140px}
 label{display:block;margin:0 0 8px;font-size:13px;color:#c6d5ef;font-weight:600}
+.check-row{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:#d7e4fb;margin:0 0 10px}
+.check-row input{margin:0}
 .btn{appearance:none;border:0;border-radius:14px;padding:11px 16px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:.2s}
 .btn:hover{transform:translateY(-1px)}
 .btn-primary{background:linear-gradient(135deg,var(--primary),var(--primary-2));color:#06223a;box-shadow:0 10px 28px rgba(21,184,255,.24)}
@@ -1152,6 +1566,18 @@ function modalScripts(): string
 <script>
 function openModal(id){const el=document.getElementById(id);if(el){el.classList.add('open');el.setAttribute('aria-hidden','false');}}
 function closeModal(id){const el=document.getElementById(id);if(el){el.classList.remove('open');el.setAttribute('aria-hidden','true');}}
+function toggleZoneKindFields(kind){
+  const secondaryKinds=['Slave','Consumer'];
+  const isSecondary=secondaryKinds.includes(kind);
+  const masters=document.getElementById('zone_masters_field');
+  const nameservers=document.getElementById('zone_nameservers_field');
+  const mastersInput=masters?masters.querySelector('textarea'):null;
+  const nameserversInput=nameservers?nameservers.querySelector('textarea'):null;
+  if(masters){masters.style.display=isSecondary?'block':'none';}
+  if(nameservers){nameservers.style.display=isSecondary?'none':'block';}
+  if(mastersInput){mastersInput.required=isSecondary;}
+  if(nameserversInput){nameserversInput.required=!isSecondary;}
+}
 function fillEditModal(raw){
   try{
     const data=JSON.parse(raw);
@@ -1161,6 +1587,10 @@ function fillEditModal(raw){
     document.getElementById('edit_content').value=data.content||'';
   }catch(e){console.error(e);alert('Failed to load RRset into editor.');}
 }
+document.addEventListener('DOMContentLoaded',function(){
+  const kind=document.getElementById('zone_kind');
+  if(kind){toggleZoneKindFields(kind.value);}
+});
 window.addEventListener('keydown',function(e){if(e.key==='Escape'){document.querySelectorAll('.modal.open').forEach(el=>closeModal(el.id));}});
 document.querySelectorAll('.modal').forEach(el=>el.addEventListener('click',function(e){if(e.target===el){closeModal(el.id);}}));
 </script>

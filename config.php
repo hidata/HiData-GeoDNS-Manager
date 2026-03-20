@@ -4,38 +4,48 @@ declare(strict_types=1);
 
 return [
     'app' => [
-        'name' => 'HiData PowerDNS Manager',
-        'timezone' => 'Europe/Warsaw',
+        'name' => 'HiData GeoDNS Manager',
+        'timezone' => 'Asia/Tehran',
     ],
 
     'auth' => [
         'username' => 'admin',
         // Generate with: php make-password-hash.php 'YourStrongPassword'
-        'password_hash' => '$2y$12$XKSwiWv.IPhhydGWahcH2.pDQD39SAsERbkZGUshhL5fHqgOZ0RM6',
+        'password_hash' => '',
+        'session_idle_timeout' => 3600,
+        'session_absolute_timeout' => 43200,
     ],
 
     'pdns' => [
-        'base_url' => 'https://pdns.example.com:8081/api/v1',
+        'base_url' => 'http://127.0.0.1:8081/api/v1',
         'server_id' => 'localhost',
         'api_key' => 'CHANGE_ME',
-        'verify_tls' => true,
+        'verify_tls' => false,
         'ca_bundle' => null,
-        'connect_timeout' => 10,
-        'timeout' => 20,
+        'connect_timeout' => 5,
+        'timeout' => 15,
     ],
 
     'features' => [
         'read_only' => false,
         'backup_before_write' => true,
         'block_secondary_writes' => true,
-        'default_auto_rectify' => false,
+        'default_auto_rectify' => true,
+        'allow_zone_create' => true,
+        'allow_zone_delete' => true,
+        'max_backups_per_zone' => 20,
     ],
 
     'security' => [
         'session_name' => 'HIDATA_PDNS',
-        'require_https' => true,
-        'cookie_secure' => true,
-        'hsts' => true,
+        'require_https' => false,
+        'cookie_secure' => false,
+        'hsts' => false,
+        'trust_proxy_headers' => true,
+        'trusted_proxies' => [
+            '127.0.0.1',
+            '::1',
+        ],
         // Leave empty to allow all source IPs reaching this app.
         'allowed_ips' => [
             // '203.0.113.10',
