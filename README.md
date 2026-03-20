@@ -13,6 +13,7 @@ The `install-hidata-geodns-manager.sh` script is intended for fresh or controlle
 - PHP-FPM
 - Release-based deployment under `/opt/hidata-geodns-manager`
 - A generated shared `config.php` with secure random secrets when you do not provide them
+- Initial panel storage artifacts and end-to-end readiness checks so the browser login is ready when the script finishes
 
 The PHP panel runs on the same server as PowerDNS and talks to the local API instead of a remote endpoint.
 
@@ -46,6 +47,7 @@ The installer writes deployment details to:
 ```
 
 That file includes the generated panel password, PowerDNS API key, and database credentials.
+It also tells you the final panel URL so you can sign in immediately after the script completes.
 
 ## Common installer options
 
@@ -78,6 +80,8 @@ Useful environment variables:
 - `PDNS_LOCAL_PORT`
 
 ## Manual development setup
+
+Only use this section when you are intentionally running the PHP panel by itself for development. The production installer already generates the config, storage, credentials, and service wiring automatically.
 
 If you only want to run the PHP panel manually:
 

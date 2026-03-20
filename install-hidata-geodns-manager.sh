@@ -106,6 +106,7 @@ APP_PASSWORD_GENERATED=0
 APP_REQUIRE_HTTPS_RESOLVED=""
 APP_COOKIE_SECURE_RESOLVED=""
 APP_HSTS_RESOLVED=""
+PANEL_VERIFY_NOTE="Skipped panel readiness checks."
 
 C_RESET='\033[0m'
 C_RED='\033[31m'
@@ -554,7 +555,7 @@ return [
     ],
 
     'pdns' => [
-        'base_url' => $(php_quote "http://${PDNS_API_BIND}:${PDNS_API_PORT}/api/v1"),
+        'base_url' => $(php_quote "$(build_url "http" "$PDNS_API_BIND" "$PDNS_API_PORT" "/api/v1")"),
         'server_id' => 'localhost',
         'api_key' => $(php_quote "$PDNS_API_KEY"),
         'verify_tls' => ${verify_tls},
@@ -592,6 +593,46 @@ return [
 EOF
 }
 
+initialize_shared_storage() {
+  log "Initializing shared storage..."
+  run mkdir -p "$SHARED_STORAGE_PATH/backups"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf "%b[DRY-RUN]%b initialize %s\n" "$C_CYAN" "$C_RESET" "$SHARED_STORAGE_PATH"
+    return 0
+  fi
+
+  touch "$SHARED_STORAGE_PATH/audit.log"
+  if [[ ! -f "$SHARED_STORAGE_PATH/login-rate.json" || ! -s "$SHARED_STORAGE_PATH/login-rate.json" ]]; then
+    printf '{}\n' >"$SHARED_STORAGE_PATH/login-rate.json"
+  fi
+
+  chown "$WEB_USER:$WEB_GROUP" "$SHARED_STORAGE_PATH/backups" "$SHARED_STORAGE_PATH/audit.log" "$SHARED_STORAGE_PATH/login-rate.json"
+  chmod 0775 "$SHARED_STORAGE_PATH/backups"
+  chmod 0660 "$SHARED_STORAGE_PATH/audit.log" "$SHARED_STORAGE_PATH/login-rate.json"
+}
+
+format_url_host() {
+  local host="$1"
+  if [[ "$host" == \[*\] ]]; then
+    printf '%s\n' "$host"
+  elif [[ "$host" == *:* ]]; then
+    printf '[%s]\n' "$host"
+  else
+    printf '%s\n' "$host"
+  fi
+}
+
+build_url() {
+  local scheme="$1" host="$2" port="$3" path="${4:-/}"
+  local formatted_host
+  formatted_host=$(format_url_host "$host")
+  if { [[ "$scheme" == "http" ]] && [[ "$port" == "80" ]]; } || { [[ "$scheme" == "https" ]] && [[ "$port" == "443" ]]; }; then
+    printf '%s://%s%s\n' "$scheme" "$formatted_host" "$path"
+  else
+    printf '%s://%s:%s%s\n' "$scheme" "$formatted_host" "$port" "$path"
+  fi
+}
+
 detect_panel_url() {
   local scheme host port
   if is_true "$APP_ENABLE_HTTPS"; then
@@ -610,12 +651,7 @@ detect_panel_url() {
       host=$(hostname -f 2>/dev/null || hostname)
     fi
   fi
-
-  if { [[ "$scheme" == "http" ]] && [[ "$port" == "80" ]]; } || { [[ "$scheme" == "https" ]] && [[ "$port" == "443" ]]; }; then
-    printf '%s://%s/\n' "$scheme" "$host"
-  else
-    printf '%s://%s:%s/\n' "$scheme" "$host" "$port"
-  fi
+  build_url "$scheme" "$host" "$port" "/"
 }
 
 write_credentials_file() {
@@ -629,9 +665,9 @@ write_credentials_file() {
     if [[ -n "$APP_PASSWORD" ]]; then
       printf 'Panel password: %s\n' "$APP_PASSWORD"
     else
-      printf 'Panel password: preserved existing hash in shared config.php\n'
+      printf 'Panel password: preserved existing hash in shared config.php (plain password unavailable)\n'
     fi
-    printf 'PowerDNS API URL: http://%s:%s/api/v1\n' "$PDNS_API_BIND" "$PDNS_API_PORT"
+    printf 'PowerDNS API URL: %s\n' "$(build_url "http" "$PDNS_API_BIND" "$PDNS_API_PORT" "/api/v1")"
     printf 'PowerDNS API key: %s\n' "$PDNS_API_KEY"
     printf 'MariaDB database: %s\n' "$PDNS_DB_NAME"
     printf 'MariaDB user: %s\n' "$PDNS_DB_USER"
@@ -1022,6 +1058,7 @@ restart_services() {
 
 verify_services() {
   if [[ "$DRY_RUN" == "1" ]]; then
+    PANEL_VERIFY_NOTE="Skipped panel readiness checks in dry-run mode."
     return 0
   fi
   log "Verifying service status..."
@@ -1031,8 +1068,111 @@ verify_services() {
   systemctl is-active --quiet nginx || die "nginx is not active."
 
   log "Verifying local PowerDNS API..."
-  curl -fsS -H "X-API-Key: ${PDNS_API_KEY}" "http://${PDNS_API_BIND}:${PDNS_API_PORT}/api/v1/servers/localhost" >/dev/null \
+  curl -fsS -H "X-API-Key: ${PDNS_API_KEY}" "$(build_url "http" "$PDNS_API_BIND" "$PDNS_API_PORT" "/api/v1/servers/localhost")" >/dev/null \
     || die "Failed to query the local PowerDNS API after deployment."
+}
+
+allowlist_allows_local_verification() {
+  [[ -z "$APP_ALLOWED_IPS" ]] && return 0
+  while IFS= read -r cidr; do
+    case "$cidr" in
+      127.0.0.1|127.0.0.1/32|127.0.0.0/8|0.0.0.0/0|::1|::1/128|::/0)
+        return 0
+        ;;
+    esac
+  done < <(split_csv_lines "$APP_ALLOWED_IPS")
+  return 1
+}
+
+verify_panel() {
+  local scheme port request_host panel_root_url health_url health_body
+  local login_page cookie_jar dashboard_page csrf_token
+  local -a curl_args
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    PANEL_VERIFY_NOTE="Skipped panel readiness checks in dry-run mode."
+    return 0
+  fi
+
+  if ! allowlist_allows_local_verification; then
+    PANEL_VERIFY_NOTE="Skipped browser-level smoke tests because APP_ALLOWED_IPS does not include loopback."
+    warn "$PANEL_VERIFY_NOTE"
+    return 0
+  fi
+
+  if is_true "$APP_ENABLE_HTTPS"; then
+    scheme="https"
+    port="$APP_HTTPS_PORT"
+  else
+    scheme="http"
+    port="$APP_HTTP_PORT"
+  fi
+
+  request_host="127.0.0.1"
+  curl_args=(-fsS --retry 5 --retry-delay 1 --connect-timeout 5)
+  if is_true "$APP_ENABLE_HTTPS"; then
+    curl_args+=(-k)
+  fi
+  if [[ "$APP_SERVER_NAME" != "_" ]]; then
+    request_host="$APP_SERVER_NAME"
+    curl_args+=(--resolve "${APP_SERVER_NAME}:${port}:127.0.0.1")
+  fi
+
+  health_url=$(build_url "$scheme" "$request_host" "$port" "/healthz")
+  panel_root_url=$(build_url "$scheme" "$request_host" "$port" "/")
+
+  log "Verifying panel health endpoint..."
+  health_body=$(curl "${curl_args[@]}" "$health_url") || die "Failed to reach the panel health endpoint at ${health_url}"
+  health_body=${health_body//$'\r'/}
+  [[ "$health_body" == "ok" || "$health_body" == $'ok\n' ]] || die "Unexpected response from ${health_url}: ${health_body@Q}"
+
+  login_page="${TEMP_DIR}/panel-login.html"
+  cookie_jar="${TEMP_DIR}/panel-cookies.txt"
+  dashboard_page="${TEMP_DIR}/panel-dashboard.html"
+  rm -f "$login_page" "$cookie_jar" "$dashboard_page"
+
+  log "Verifying panel login page..."
+  curl "${curl_args[@]}" -c "$cookie_jar" "$panel_root_url" -o "$login_page" \
+    || die "Failed to load the panel login page at ${panel_root_url}"
+  grep -Fq '<h1>Sign in</h1>' "$login_page" \
+    || die "The panel login page did not render as expected."
+
+  if [[ -z "$APP_PASSWORD" ]]; then
+    PANEL_VERIFY_NOTE="Verified the panel URL and login page. Login smoke test skipped because the installer does not know the plain panel password."
+    warn "$PANEL_VERIFY_NOTE"
+    return 0
+  fi
+
+  csrf_token=$(python3 - "$login_page" <<'PY'
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    html = fh.read()
+
+match = re.search(r'name="csrf_token"\s+value="([^"]+)"', html)
+if not match:
+    raise SystemExit(1)
+
+print(match.group(1))
+PY
+) || die "Failed to extract the panel login CSRF token."
+
+  log "Verifying panel sign-in with the configured application credentials..."
+  curl "${curl_args[@]}" -L -b "$cookie_jar" -c "$cookie_jar" \
+    --data-urlencode "csrf_token=${csrf_token}" \
+    --data-urlencode "action=login" \
+    --data-urlencode "username=${APP_USERNAME}" \
+    --data-urlencode "password=${APP_PASSWORD}" \
+    "$panel_root_url" -o "$dashboard_page" \
+    || die "Failed to sign in to the panel with the configured application credentials."
+
+  grep -Fq 'Signed in successfully.' "$dashboard_page" \
+    || die "The panel did not confirm a successful login after installation."
+  grep -Fq 'Sign out' "$dashboard_page" \
+    || die "The authenticated panel view did not render as expected after login."
+
+  PANEL_VERIFY_NOTE="Verified the panel URL, login page, and authenticated dashboard using the configured installer credentials."
 }
 
 print_summary() {
@@ -1054,11 +1194,12 @@ Paths:
 
 Endpoints:
   Panel            : ${panel_url}
-  PowerDNS API     : http://${PDNS_API_BIND}:${PDNS_API_PORT}/api/v1
+  PowerDNS API     : $(build_url "http" "$PDNS_API_BIND" "$PDNS_API_PORT" "/api/v1")
 
 Notes:
   - The PowerDNS API is bound locally for the PHP panel running on this same server.
   - Use the credentials file above to retrieve the generated panel password and API key.
+  - Readiness      : ${PANEL_VERIFY_NOTE}
   - Add your DNS zones in the panel, then point your registrar glue/NS records to this server.
 SUMMARY
 
@@ -1100,7 +1241,7 @@ main() {
   log "Install root   : ${INSTALL_ROOT}"
   log "Web root       : ${WEB_ROOT}"
   log "PowerDNS DB    : ${PDNS_DB_NAME}"
-  log "PowerDNS API   : http://${PDNS_API_BIND}:${PDNS_API_PORT}/api/v1"
+  log "PowerDNS API   : $(build_url "http" "$PDNS_API_BIND" "$PDNS_API_PORT" "/api/v1")"
   log "PHP-FPM        : ${PHP_FPM_SERVICE}"
 
   if [[ "$FORCE" != "1" ]]; then
@@ -1113,6 +1254,7 @@ main() {
   hydrate_existing_configuration
   ensure_secrets
   generate_shared_config
+  initialize_shared_storage
   configure_systemd_resolved_stub
   assert_dns_port_available
   configure_database
@@ -1143,6 +1285,7 @@ main() {
   validate_service_configs
   restart_services
   verify_services
+  verify_panel
   prune_old_releases
   write_credentials_file
 
