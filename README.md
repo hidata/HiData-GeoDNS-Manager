@@ -1,4 +1,4 @@
-# HiData PowerDNS Manager
+# HiData GeoDNS Manager
 
 A standalone PHP panel for securely managing PowerDNS zones and RRsets from another host.
 
