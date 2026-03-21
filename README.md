@@ -22,6 +22,7 @@ The PHP panel runs on the same server as PowerDNS and talks to the local API ins
 - Local application login separate from the PowerDNS API key
 - Zone list, search, create, and delete
 - RRset list, filter, add, edit, and delete
+- Zone-file import from plain text or Cloudflare/BIND-style exports
 - Zone export
 - Zone rectify
 - Automatic pre-change zone backups

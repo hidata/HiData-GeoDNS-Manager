@@ -591,6 +591,11 @@ function handleMutation(array $config): never
                 $_SESSION['flash'] = ['type' => 'success', 'message' => 'Record set deleted successfully.'];
                 break;
 
+            case 'import_zone_file':
+                $importResult = importZoneFileFromPost($config);
+                $_SESSION['flash'] = ['type' => 'success', 'message' => summarizeZoneImportResult($importResult)];
+                break;
+
             case 'rectify_zone':
                 $zoneName = requirePostedZoneName();
                 $zone = fetchZone($config, $zoneName);
@@ -714,6 +719,451 @@ function parseTextareaLines(string $raw): array
         }
     }
     return $values;
+}
+
+function importZoneFileFromPost(array $config): array
+{
+    $zoneName = requirePostedZoneName();
+    $zone = fetchZone($config, $zoneName);
+    guardWritableZone($config, $zone);
+
+    $raw = loadZoneImportTextFromRequest();
+    $result = parseZoneImportText($raw, (string)$zone['name'], [
+        'include_soa' => !empty($_POST['import_soa']),
+        'include_ns' => !empty($_POST['import_ns']),
+    ]);
+
+    backupZoneSnapshot($config, (string)$zone['id'], 'import');
+    pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
+        'rrsets' => $result['rrsets'],
+    ]);
+    maybeRectify($config, $zone);
+
+    audit($config, 'import_zone_file', [
+        'zone' => $zone['name'],
+        'rrset_count' => $result['rrset_count'],
+        'record_count' => $result['record_count'],
+        'skipped_soa' => $result['skipped_soa'],
+        'skipped_ns' => $result['skipped_ns'],
+        'skipped_unsupported' => $result['skipped_unsupported'],
+    ]);
+
+    return $result;
+}
+
+function loadZoneImportTextFromRequest(): string
+{
+    $pasted = trim((string)($_POST['zone_text'] ?? ''));
+    if ($pasted !== '') {
+        return $pasted;
+    }
+
+    $file = $_FILES['zone_file'] ?? null;
+    if (!is_array($file)) {
+        throw new RuntimeException('Upload a zone text file or paste the zone content.');
+    }
+
+    $error = (int)($file['error'] ?? UPLOAD_ERR_NO_FILE);
+    if ($error === UPLOAD_ERR_NO_FILE) {
+        throw new RuntimeException('Upload a zone text file or paste the zone content.');
+    }
+    if ($error !== UPLOAD_ERR_OK) {
+        throw new RuntimeException(match ($error) {
+            UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'The uploaded file is too large.',
+            UPLOAD_ERR_PARTIAL => 'The uploaded file was only partially received.',
+            default => 'The uploaded file could not be processed.',
+        });
+    }
+
+    $tmpName = (string)($file['tmp_name'] ?? '');
+    if ($tmpName === '' || !is_uploaded_file($tmpName)) {
+        throw new RuntimeException('The uploaded file is not available anymore. Please try again.');
+    }
+
+    $size = (int)($file['size'] ?? 0);
+    if ($size > 2 * 1024 * 1024) {
+        throw new RuntimeException('The uploaded file is too large. Keep zone imports under 2 MB.');
+    }
+
+    $raw = file_get_contents($tmpName);
+    if ($raw === false) {
+        throw new RuntimeException('Failed to read the uploaded zone file.');
+    }
+
+    $raw = trim((string)$raw);
+    if ($raw === '') {
+        throw new RuntimeException('The uploaded zone file is empty.');
+    }
+
+    return $raw;
+}
+
+function parseZoneImportText(string $raw, string $zoneName, array $options = []): array
+{
+    $zoneName = ensureTrailingDot($zoneName);
+    $origin = $zoneName;
+    $currentOwner = $zoneName;
+    $defaultTtl = null;
+    $rrsets = [];
+    $skippedSoa = 0;
+    $skippedNs = 0;
+    $unsupportedTypes = [];
+
+    $lines = preg_split('/\r\n|\r|\n/', $raw) ?: [];
+    foreach ($lines as $lineNumber => $line) {
+        $withoutComment = stripZoneImportComment((string)$line);
+        if (trim($withoutComment) === '') {
+            continue;
+        }
+
+        $tokens = tokenizeZoneImportLine(trim($withoutComment));
+        if ($tokens === []) {
+            continue;
+        }
+
+        if (str_starts_with($tokens[0], '$')) {
+            [$origin, $defaultTtl] = applyZoneImportDirective($tokens, $origin, $zoneName, $defaultTtl, $lineNumber + 1);
+            continue;
+        }
+
+        $hasImplicitOwner = preg_match('/^[ \t]/', $withoutComment) === 1;
+        [$record, $currentOwner] = parseZoneImportRecordTokens(
+            $tokens,
+            $currentOwner,
+            $defaultTtl,
+            $origin,
+            $zoneName,
+            $lineNumber + 1,
+            $hasImplicitOwner
+        );
+
+        $type = $record['type'];
+        if ($type === 'SOA' && ($options['include_soa'] ?? false) !== true) {
+            $skippedSoa++;
+            continue;
+        }
+        if ($type === 'NS' && ($options['include_ns'] ?? false) !== true) {
+            $skippedNs++;
+            continue;
+        }
+        if (!isSupportedImportRecordType($type)) {
+            $unsupportedTypes[$type] = ($unsupportedTypes[$type] ?? 0) + 1;
+            continue;
+        }
+
+        $content = normalizeRecordContent($type, $record['content']);
+        $key = $record['name'] . '|' . $type;
+        if (!isset($rrsets[$key])) {
+            $rrsets[$key] = [
+                'name' => $record['name'],
+                'type' => $type,
+                'ttl' => $record['ttl'],
+                'changetype' => 'REPLACE',
+                'records' => [],
+            ];
+        } elseif ((int)$rrsets[$key]['ttl'] !== (int)$record['ttl']) {
+            throw new RuntimeException(sprintf(
+                'Imported RRset %s %s mixes multiple TTL values. PowerDNS expects one TTL per RRset.',
+                rtrim((string)$record['name'], '.'),
+                $type
+            ));
+        }
+
+        $rrsets[$key]['records'][$content] = [
+            'content' => $content,
+            'disabled' => false,
+        ];
+    }
+
+    if ($rrsets === []) {
+        throw new RuntimeException('No supported RRsets were found in the uploaded zone text.');
+    }
+
+    $recordCount = 0;
+    foreach ($rrsets as &$rrset) {
+        $rrset['records'] = array_values($rrset['records']);
+        if (in_array((string)$rrset['type'], ['CNAME', 'SOA'], true) && count($rrset['records']) !== 1) {
+            throw new RuntimeException(sprintf(
+                '%s %s must contain exactly one record value.',
+                rtrim((string)$rrset['name'], '.'),
+                (string)$rrset['type']
+            ));
+        }
+        $recordCount += count($rrset['records']);
+    }
+    unset($rrset);
+
+    ksort($unsupportedTypes, SORT_NATURAL | SORT_FLAG_CASE);
+
+    return [
+        'rrsets' => array_values($rrsets),
+        'rrset_count' => count($rrsets),
+        'record_count' => $recordCount,
+        'skipped_soa' => $skippedSoa,
+        'skipped_ns' => $skippedNs,
+        'skipped_unsupported' => $unsupportedTypes,
+    ];
+}
+
+function stripZoneImportComment(string $line): string
+{
+    $result = '';
+    $inQuote = false;
+    $escape = false;
+    $length = strlen($line);
+
+    for ($i = 0; $i < $length; $i++) {
+        $char = $line[$i];
+        if ($escape) {
+            $result .= $char;
+            $escape = false;
+            continue;
+        }
+        if ($char === '\\') {
+            $result .= $char;
+            $escape = true;
+            continue;
+        }
+        if ($char === '"') {
+            $result .= $char;
+            $inQuote = !$inQuote;
+            continue;
+        }
+        if (!$inQuote && $char === ';') {
+            break;
+        }
+        $result .= $char;
+    }
+
+    return rtrim($result);
+}
+
+function tokenizeZoneImportLine(string $line): array
+{
+    $tokens = [];
+    $buffer = '';
+    $inQuote = false;
+    $escape = false;
+    $length = strlen($line);
+
+    for ($i = 0; $i < $length; $i++) {
+        $char = $line[$i];
+        if ($escape) {
+            $buffer .= $char;
+            $escape = false;
+            continue;
+        }
+        if ($char === '\\') {
+            $buffer .= $char;
+            $escape = true;
+            continue;
+        }
+        if ($char === '"') {
+            $buffer .= $char;
+            $inQuote = !$inQuote;
+            continue;
+        }
+        if (!$inQuote && ctype_space($char)) {
+            if ($buffer !== '') {
+                $tokens[] = $buffer;
+                $buffer = '';
+            }
+            continue;
+        }
+        if (!$inQuote && ($char === '(' || $char === ')')) {
+            if ($buffer !== '') {
+                $tokens[] = $buffer;
+                $buffer = '';
+            }
+            continue;
+        }
+        $buffer .= $char;
+    }
+
+    if ($buffer !== '') {
+        $tokens[] = $buffer;
+    }
+
+    return $tokens;
+}
+
+function applyZoneImportDirective(array $tokens, string $origin, string $zoneName, ?int $defaultTtl, int $lineNumber): array
+{
+    $directive = strtoupper($tokens[0]);
+
+    return match ($directive) {
+        '$ORIGIN' => [resolveZoneImportName($tokens[1] ?? '', $origin, $zoneName, $lineNumber), $defaultTtl],
+        '$TTL' => [$origin, normalizeZoneImportTtl($tokens[1] ?? '', $lineNumber)],
+        default => [$origin, $defaultTtl],
+    };
+}
+
+function parseZoneImportRecordTokens(
+    array $tokens,
+    string $currentOwner,
+    ?int $defaultTtl,
+    string $origin,
+    string $zoneName,
+    int $lineNumber,
+    bool $hasImplicitOwner
+): array {
+    $index = 0;
+    $owner = $currentOwner;
+
+    if (!$hasImplicitOwner) {
+        $first = $tokens[0] ?? '';
+        if ($first !== '' && !ctype_digit($first) && !isDnsClassToken($first) && !isRecognizedImportRecordType($first)) {
+            $owner = resolveZoneImportName($first, $origin, $zoneName, $lineNumber);
+            $currentOwner = $owner;
+            $index++;
+        }
+    }
+
+    $ttl = null;
+    $class = null;
+    while ($index < count($tokens)) {
+        $token = $tokens[$index];
+        if ($ttl === null && ctype_digit($token)) {
+            $ttl = normalizeZoneImportTtl($token, $lineNumber);
+            $index++;
+            continue;
+        }
+        if ($class === null && isDnsClassToken($token)) {
+            $class = strtoupper($token);
+            $index++;
+            continue;
+        }
+        break;
+    }
+
+    $type = strtoupper((string)($tokens[$index] ?? ''));
+    if ($type === '' || !isRecognizedImportRecordType($type)) {
+        throw new RuntimeException('Could not determine the DNS record type on line ' . $lineNumber . '.');
+    }
+    $index++;
+
+    $content = trim(implode(' ', array_slice($tokens, $index)));
+    if ($content === '') {
+        throw new RuntimeException('Imported record content is empty on line ' . $lineNumber . '.');
+    }
+    if ($class !== null && $class !== 'IN') {
+        throw new RuntimeException('Only IN-class records are supported for import (line ' . $lineNumber . ').');
+    }
+
+    $ttl = $ttl ?? $defaultTtl ?? 3600;
+    if ($ttl < 1 || $ttl > 2147483647) {
+        throw new RuntimeException('TTL must be between 1 and 2147483647 on line ' . $lineNumber . '.');
+    }
+    if (!isNameInsideZone($owner, $zoneName)) {
+        throw new RuntimeException(sprintf(
+            'The imported record %s is outside the selected zone %s (line %d).',
+            rtrim($owner, '.'),
+            rtrim($zoneName, '.'),
+            $lineNumber
+        ));
+    }
+
+    return [[
+        'name' => $owner,
+        'type' => $type,
+        'ttl' => $ttl,
+        'content' => $content,
+    ], $currentOwner];
+}
+
+function resolveZoneImportName(string $token, string $origin, string $zoneName, int $lineNumber): string
+{
+    $token = trim($token);
+    if ($token === '') {
+        throw new RuntimeException('The import file contains an empty owner/origin token on line ' . $lineNumber . '.');
+    }
+
+    if ($token === '@') {
+        $fqdn = $origin;
+    } elseif (str_ends_with($token, '.')) {
+        $fqdn = ensureTrailingDot($token);
+    } else {
+        $fqdn = ensureTrailingDot($token . '.' . rtrim($origin, '.'));
+    }
+
+    if (!isNameInsideZone($fqdn, $zoneName)) {
+        throw new RuntimeException(sprintf(
+            'The import file references %s, which is outside the selected zone %s (line %d).',
+            rtrim($fqdn, '.'),
+            rtrim($zoneName, '.'),
+            $lineNumber
+        ));
+    }
+
+    return $fqdn;
+}
+
+function normalizeZoneImportTtl(string $token, int $lineNumber): int
+{
+    if (!ctype_digit($token)) {
+        throw new RuntimeException('Invalid TTL value on line ' . $lineNumber . '.');
+    }
+    return (int)$token;
+}
+
+function isDnsClassToken(string $token): bool
+{
+    return in_array(strtoupper(trim($token)), ['IN', 'CH', 'HS'], true);
+}
+
+function isRecognizedImportRecordType(string $token): bool
+{
+    return in_array(strtoupper(trim($token)), [
+        'A', 'AAAA', 'CAA', 'CNAME', 'DNSKEY', 'DS', 'HTTPS', 'LOC', 'MX', 'NAPTR',
+        'NS', 'PTR', 'RP', 'SOA', 'SPF', 'SRV', 'SSHFP', 'SVCB', 'TLSA', 'TXT', 'URI',
+    ], true);
+}
+
+function isSupportedImportRecordType(string $type): bool
+{
+    return in_array(strtoupper($type), ['A', 'AAAA', 'CAA', 'CNAME', 'MX', 'NS', 'PTR', 'SOA', 'SPF', 'SRV', 'TXT'], true);
+}
+
+function isNameInsideZone(string $fqdn, string $zoneName): bool
+{
+    $fqdn = ensureTrailingDot($fqdn);
+    $zoneName = ensureTrailingDot($zoneName);
+    return $fqdn === $zoneName || str_ends_with($fqdn, '.' . $zoneName);
+}
+
+function summarizeZoneImportResult(array $result): string
+{
+    $parts = [
+        sprintf(
+            'Zone import completed: %d RRsets / %d records applied.',
+            (int)($result['rrset_count'] ?? 0),
+            (int)($result['record_count'] ?? 0)
+        ),
+    ];
+
+    $skipped = [];
+    $skippedSoa = (int)($result['skipped_soa'] ?? 0);
+    $skippedNs = (int)($result['skipped_ns'] ?? 0);
+    if ($skippedSoa > 0) {
+        $skipped[] = $skippedSoa . ' SOA';
+    }
+    if ($skippedNs > 0) {
+        $skipped[] = $skippedNs . ' NS';
+    }
+    if ($skipped !== []) {
+        $parts[] = 'Skipped by default: ' . implode(', ', $skipped) . '.';
+    }
+
+    $unsupported = $result['skipped_unsupported'] ?? [];
+    if (is_array($unsupported) && $unsupported !== []) {
+        $labels = [];
+        foreach ($unsupported as $type => $count) {
+            $labels[] = $type . ' (' . (int)$count . ')';
+        }
+        $parts[] = 'Unsupported record types skipped: ' . implode(', ', $labels) . '.';
+    }
+
+    return implode(' ', $parts);
 }
 
 function buildRrsetPayloadFromPost(string $zoneName): array
@@ -1306,6 +1756,7 @@ function renderPage(array $data): void
     echo '<div class="zone-actions">';
     if ($canModifyCurrentZone) {
         echo '<a class="btn btn-primary" href="#" onclick="openModal(\'addModal\');return false;">Add record</a>';
+        echo '<a class="btn btn-ghost" href="#" onclick="openModal(\'importModal\');return false;">Import TXT</a>';
     }
     echo '<a class="btn btn-ghost" href="?download=zone&amp;zone=' . urlencode(rtrim((string)$zoneDetails['name'], '.')) . '">Export zone</a>';
     if ($canRectifyCurrentZone) {
@@ -1388,6 +1839,7 @@ function renderPage(array $data): void
         echo buildCreateZoneModal();
     }
     if ($canModifyCurrentZone) {
+        echo buildImportModal((string)$zoneDetails['name']);
         echo buildAddModal((string)$zoneDetails['name']);
         echo buildEditModal((string)$zoneDetails['name']);
     }
@@ -1405,6 +1857,11 @@ function buildAddModal(string $zoneName): string
 function buildEditModal(string $zoneName): string
 {
     return '<div class="modal" id="editModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit RRset</h3><button class="icon-btn" type="button" onclick="closeModal(\'editModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Name</label><input class="input" id="edit_name" name="name" required></div><div><label>Type</label><select class="input" id="edit_type" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" id="edit_ttl" name="ttl" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Editing replaces the whole RRset for this name and type.</div></div></div><label>Content</label><textarea class="textarea" id="edit_content" name="content" rows="8" required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'editModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div></form></div></div>';
+}
+
+function buildImportModal(string $zoneName): string
+{
+    return '<div class="modal" id="importModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Import zone text</h3><button class="icon-btn" type="button" onclick="closeModal(\'importModal\')">&times;</button></div><form method="post" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="import_zone_file"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><label>Zone file</label><input class="input" type="file" name="zone_file" accept=".txt,.zone,text/plain"><div class="hint">Upload a Cloudflare/BIND-style text export, or paste the same content below.</div><label>Or paste zone text</label><textarea class="textarea" name="zone_text" rows="12" placeholder="hidata.org. 3600 IN A 192.0.2.10"></textarea><div class="grid-two"><div><label>Import options</label><div class="hint"><label class="check-row"><input type="checkbox" name="import_ns" value="1"> Import NS records too</label><label class="check-row"><input type="checkbox" name="import_soa" value="1"> Import SOA record too</label></div></div><div><label>Notes</label><div class="hint">Imported RRsets are upserted with REPLACE, so records in this file overwrite the same name/type in the selected zone. Records not present in the file are kept. SOA and NS are skipped by default because Cloudflare exports often contain authority values that should be changed before production use.</div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'importModal\')">Cancel</button><button class="btn btn-primary" type="submit">Import records</button></div></form></div></div>';
 }
 
 function buildCreateZoneModal(): string
