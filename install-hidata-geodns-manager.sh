@@ -301,7 +301,9 @@ cleanup() {
     fi
     if [[ "$PDNS_SERVICE_STOPPED_BY_INSTALLER" == "1" && "$DRY_RUN" != "1" ]]; then
       warn "Attempting to restart ${PDNS_SERVICE} because the installer stopped it earlier."
-      systemctl start "$PDNS_SERVICE" || true
+      if ! systemctl start "$PDNS_SERVICE" >/dev/null 2>&1; then
+        warn "Failed to restart ${PDNS_SERVICE} during cleanup. Check: systemctl status ${PDNS_SERVICE} && journalctl -xeu ${PDNS_SERVICE}"
+      fi
     fi
   fi
   if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]]; then
@@ -1055,7 +1057,6 @@ $(nginx_allowlist_block)
     }
 
     location ~ \.php$ {
-        try_files \$uri =404;
         include snippets/fastcgi-php.conf;
         fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         fastcgi_param DOCUMENT_ROOT \$realpath_root;
