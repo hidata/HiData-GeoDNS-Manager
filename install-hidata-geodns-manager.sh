@@ -18,6 +18,7 @@ PDNS_DB_PORT_DEFAULT="3306"
 PDNS_API_BIND_DEFAULT="127.0.0.1"
 PDNS_API_PORT_DEFAULT="8081"
 PDNS_API_ALLOW_FROM_DEFAULT="127.0.0.1,::1"
+PDNS_GEOIP_DATABASE_FILES_DEFAULT=""
 APP_SERVER_NAME_DEFAULT="_"
 APP_HTTP_PORT_DEFAULT="80"
 APP_HTTPS_PORT_DEFAULT="443"
@@ -54,6 +55,7 @@ PDNS_API_PORT="${PDNS_API_PORT:-$PDNS_API_PORT_DEFAULT}"
 PDNS_API_ALLOW_FROM="${PDNS_API_ALLOW_FROM:-$PDNS_API_ALLOW_FROM_DEFAULT}"
 PDNS_API_KEY="${PDNS_API_KEY:-}"
 PDNS_ENABLE_DNSSEC="${PDNS_ENABLE_DNSSEC:-1}"
+PDNS_GEOIP_DATABASE_FILES="${PDNS_GEOIP_DATABASE_FILES:-$PDNS_GEOIP_DATABASE_FILES_DEFAULT}"
 PDNS_LOCAL_PORT="${PDNS_LOCAL_PORT:-53}"
 PDNS_LOCAL_ADDRESS="${PDNS_LOCAL_ADDRESS:-}"
 APP_SERVER_NAME="${APP_SERVER_NAME:-$APP_SERVER_NAME_DEFAULT}"
@@ -89,6 +91,7 @@ SHARED_DIR="${INSTALL_ROOT}/shared"
 SHARED_CONFIG_PATH="${SHARED_DIR}/config.php"
 SHARED_STORAGE_PATH="${SHARED_DIR}/storage"
 PDNS_CONFIG_FILE="${PDNS_CONFIG_FILE:-/etc/powerdns/pdns.d/90-${APP_SLUG}.conf}"
+PDNS_GEOIP_ZONES_FILE="${PDNS_GEOIP_ZONES_FILE:-/etc/powerdns/pdns.d/91-${APP_SLUG}-geoip.yaml}"
 PHP_FPM_INI_FILE="${PHP_FPM_INI_FILE:-/etc/php/${PHP_VERSION}/fpm/conf.d/99-${APP_SLUG}.ini}"
 NGINX_SITE_PATH="${NGINX_SITE_PATH:-/etc/nginx/sites-available/${APP_SLUG}.conf}"
 NGINX_SITE_LINK="/etc/nginx/sites-enabled/${APP_SLUG}.conf"
@@ -149,6 +152,8 @@ Environment variables:
   PDNS_DB_USER            Default: ${PDNS_DB_USER_DEFAULT}
   PDNS_DB_PASSWORD        Auto-generated when omitted.
   PDNS_API_KEY            Auto-generated when omitted.
+  PDNS_GEOIP_DATABASE_FILES
+                          Optional comma-separated GeoIP database paths for PowerDNS.
   PDNS_LOCAL_PORT         Default: 53
   SKIP_APT                Set to 1 to skip apt package installation.
   RUN_COMPOSER            auto|1|0. Default: auto
@@ -324,6 +329,11 @@ ensure_identifier() {
   [[ "$value" =~ ^[A-Za-z0-9_]+$ ]] || die "${name} must contain only letters, numbers, and underscores."
 }
 
+is_loopback_host() {
+  local value="${1,,}"
+  [[ "$value" == "127.0.0.1" || "$value" == "::1" || "$value" == "localhost" ]]
+}
+
 validate_inputs() {
   ensure_identifier "PDNS_DB_NAME" "$PDNS_DB_NAME"
   ensure_identifier "PDNS_DB_USER" "$PDNS_DB_USER"
@@ -335,6 +345,8 @@ validate_inputs() {
   [[ "$PDNS_LOCAL_PORT" =~ ^[0-9]+$ ]] || die "PDNS_LOCAL_PORT must be numeric."
   [[ "$APP_HTTP_PORT" =~ ^[0-9]+$ ]] || die "APP_HTTP_PORT must be numeric."
   [[ "$APP_HTTPS_PORT" =~ ^[0-9]+$ ]] || die "APP_HTTPS_PORT must be numeric."
+  is_loopback_host "$PDNS_DB_HOST" || die "PDNS_DB_HOST must stay on the local host (127.0.0.1, ::1, or localhost) because this installer provisions a local MariaDB instance."
+  is_loopback_host "$PDNS_API_BIND" || die "PDNS_API_BIND must stay on loopback (127.0.0.1, ::1, or localhost) so the panel can safely reach the local PowerDNS API."
   if is_true "$APP_ENABLE_HTTPS"; then
     [[ -n "$TLS_CERT_PATH" && -n "$TLS_KEY_PATH" ]] || die "APP_ENABLE_HTTPS=1 requires TLS_CERT_PATH and TLS_KEY_PATH."
     [[ -r "$TLS_CERT_PATH" ]] || die "TLS certificate not readable: ${TLS_CERT_PATH}"
@@ -383,14 +395,22 @@ extract_pdns_setting() {
 
 hydrate_existing_configuration() {
   local existing_app_api_key existing_app_hash existing_pdns_api_key existing_pdns_db_password
+  local existing_db_name existing_db_user existing_db_password
   existing_app_api_key=$(extract_php_config_value "$SHARED_CONFIG_PATH" "pdns" "api_key")
   existing_app_hash=$(extract_php_config_value "$SHARED_CONFIG_PATH" "auth" "password_hash")
+  existing_db_name=$(extract_php_config_value "$SHARED_CONFIG_PATH" "database" "name")
+  existing_db_user=$(extract_php_config_value "$SHARED_CONFIG_PATH" "database" "username")
+  existing_db_password=$(extract_php_config_value "$SHARED_CONFIG_PATH" "database" "password")
   existing_pdns_api_key=$(extract_pdns_setting "$PDNS_CONFIG_FILE" "api-key")
   existing_pdns_db_password=$(extract_pdns_setting "$PDNS_CONFIG_FILE" "gmysql-password")
 
   if [[ -f "$SHARED_CONFIG_PATH" && "$APP_CONFIG_OVERWRITE" != "1" ]]; then
-    PRESERVE_APP_CONFIG=1
-    log "Preserving existing shared config.php"
+    if [[ -n "$existing_db_name" && -n "$existing_db_user" && -n "$existing_db_password" ]]; then
+      PRESERVE_APP_CONFIG=1
+      log "Preserving existing shared config.php"
+    else
+      log "Existing shared config.php is missing GeoDNS database settings; regenerating it."
+    fi
   fi
 
   if [[ -z "$PDNS_API_KEY" ]]; then
@@ -425,7 +445,7 @@ apt_install() {
   export DEBIAN_FRONTEND=noninteractive
   local packages=(
     ca-certificates curl dnsutils git jq mariadb-server nginx openssl
-    pdns-server pdns-backend-mysql rsync unzip
+    pdns-server pdns-backend-geoip pdns-backend-mysql geoip-database rsync unzip
     "php${PHP_VERSION}" "php${PHP_VERSION}-cli" "php${PHP_VERSION}-curl"
     "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-intl" "php${PHP_VERSION}-mbstring"
     "php${PHP_VERSION}-mysql" "php${PHP_VERSION}-opcache" "php${PHP_VERSION}-xml"
@@ -562,6 +582,21 @@ return [
         'ca_bundle' => null,
         'connect_timeout' => 5,
         'timeout' => 15,
+    ],
+
+    'database' => [
+        'host' => $(php_quote "$PDNS_DB_HOST"),
+        'port' => ${PDNS_DB_PORT},
+        'name' => $(php_quote "$PDNS_DB_NAME"),
+        'username' => $(php_quote "$PDNS_DB_USER"),
+        'password' => $(php_quote "$PDNS_DB_PASSWORD"),
+        'charset' => 'utf8mb4',
+    ],
+
+    'geodns' => [
+        'default_match_countries' => ['IR'],
+        'default_ttl' => 60,
+        'max_answers_per_pool' => 8,
     ],
 
     'features' => [
@@ -749,6 +784,28 @@ configure_database() {
       mysql_exec "ALTER TABLE \`${PDNS_DB_NAME}\`.cryptokeys ADD CONSTRAINT cryptokeys_domain_id_ibfk FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE ON UPDATE CASCADE;"
     fi
   fi
+
+  log "Ensuring the GeoDNS application tables exist..."
+  mysql_exec "CREATE TABLE IF NOT EXISTS \`${PDNS_DB_NAME}\`.hidata_geo_rules (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    zone_name VARCHAR(255) NOT NULL,
+    fqdn VARCHAR(255) NOT NULL,
+    record_type VARCHAR(10) NOT NULL,
+    ttl INT UNSIGNED NOT NULL DEFAULT 60,
+    country_codes VARCHAR(128) NOT NULL,
+    country_answers_json LONGTEXT NOT NULL,
+    default_answers_json LONGTEXT NOT NULL,
+    health_check_port SMALLINT UNSIGNED DEFAULT NULL,
+    is_enabled TINYINT(1) NOT NULL DEFAULT 1,
+    last_sync_error TEXT DEFAULT NULL,
+    last_synced_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_hidata_geo_rules_zone_fqdn_type (zone_name, fqdn, record_type),
+    KEY idx_hidata_geo_rules_zone_name (zone_name),
+    KEY idx_hidata_geo_rules_zone_fqdn (zone_name, fqdn)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
 }
 
 ensure_pdns_include_dir() {
@@ -762,6 +819,49 @@ ensure_pdns_include_dir() {
       printf '\ninclude-dir=/etc/powerdns/pdns.d\n' >>"$main_conf"
     fi
   fi
+}
+
+detect_geoip_database_files() {
+  if [[ -n "$PDNS_GEOIP_DATABASE_FILES" ]]; then
+    local custom_files=()
+    local candidate
+    while IFS= read -r candidate; do
+      [[ -n "$candidate" ]] || continue
+      [[ -r "$candidate" ]] || die "Configured GeoIP database file is not readable: ${candidate}"
+      custom_files+=("$candidate")
+    done < <(split_csv_lines "$PDNS_GEOIP_DATABASE_FILES")
+
+    ((${#custom_files[@]} > 0)) || die "PDNS_GEOIP_DATABASE_FILES was provided, but no readable files were found in it."
+
+    local custom_joined=""
+    for candidate in "${custom_files[@]}"; do
+      if [[ -n "$custom_joined" ]]; then
+        custom_joined+=","
+      fi
+      custom_joined+="$candidate"
+    done
+
+    printf '%s\n' "$custom_joined"
+    return 0
+  fi
+
+  local files=()
+  local candidate
+  for candidate in /usr/share/GeoIP/*.dat /usr/share/GeoIP/*.mmdb; do
+    [[ -f "$candidate" ]] || continue
+    files+=("$candidate")
+  done
+
+  ((${#files[@]} > 0)) || die "Could not locate any GeoIP database files. Install geoip-database or set PDNS_GEOIP_DATABASE_FILES."
+
+  local joined="" file
+  for file in "${files[@]}"; do
+    if [[ -n "$joined" ]]; then
+      joined+=","
+    fi
+    joined+="$file"
+  done
+  printf '%s\n' "$joined"
 }
 
 configure_systemd_resolved_stub() {
@@ -842,11 +942,18 @@ assert_dns_port_available() {
 configure_pdns() {
   ensure_pdns_include_dir
   run mkdir -p /etc/powerdns/pdns.d
+  local geoip_database_files
+  geoip_database_files=$(detect_geoip_database_files)
+  log "Writing PowerDNS GeoIP zone helper file..."
+  write_file "$PDNS_GEOIP_ZONES_FILE" 0644 root root <<EOF
+# Managed by ${APP_NAME} installer
+domains: []
+EOF
   log "Writing PowerDNS configuration..."
   {
     cat <<EOF
 # Managed by ${APP_NAME} installer
-launch=gmysql
+launch=gmysql,geoip
 gmysql-host=${PDNS_DB_HOST}
 gmysql-port=${PDNS_DB_PORT}
 gmysql-dbname=${PDNS_DB_NAME}
@@ -854,6 +961,10 @@ gmysql-user=${PDNS_DB_USER}
 gmysql-password=${PDNS_DB_PASSWORD}
 gmysql-dnssec=$(if is_true "$PDNS_ENABLE_DNSSEC"; then printf 'yes'; else printf 'no'; fi)
 gmysql-innodb-read-committed=yes
+enable-lua-records=yes
+edns-subnet-processing=yes
+geoip-database-files=${geoip_database_files}
+geoip-zones-file=${PDNS_GEOIP_ZONES_FILE}
 webserver=yes
 webserver-address=${PDNS_API_BIND}
 webserver-port=${PDNS_API_PORT}
@@ -1067,6 +1178,10 @@ verify_services() {
   systemctl is-active --quiet "$PDNS_SERVICE" || die "${PDNS_SERVICE} is not active."
   systemctl is-active --quiet nginx || die "nginx is not active."
 
+  local geodns_table_count
+  geodns_table_count=$(mysql_scalar "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${PDNS_DB_NAME}' AND table_name='hidata_geo_rules';")
+  [[ "$geodns_table_count" == "1" ]] || die "GeoDNS application table hidata_geo_rules was not created successfully."
+
   log "Verifying local PowerDNS API..."
   curl -fsS -H "X-API-Key: ${PDNS_API_KEY}" "$(build_url "http" "$PDNS_API_BIND" "$PDNS_API_PORT" "/api/v1/servers/localhost")" >/dev/null \
     || die "Failed to query the local PowerDNS API after deployment."
@@ -1189,6 +1304,7 @@ Paths:
   Shared config    : ${SHARED_CONFIG_PATH}
   Shared storage   : ${SHARED_STORAGE_PATH}
   PowerDNS config  : ${PDNS_CONFIG_FILE}
+  GeoIP zones file : ${PDNS_GEOIP_ZONES_FILE}
   Nginx site       : ${NGINX_SITE_PATH}
   Credentials file : ${CREDENTIALS_FILE}
 

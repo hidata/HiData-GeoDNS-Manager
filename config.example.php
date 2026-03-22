@@ -27,6 +27,21 @@ return [
         'timeout' => 15,
     ],
 
+    'database' => [
+        'host' => '127.0.0.1',
+        'port' => 3306,
+        'name' => 'hidata_geodns',
+        'username' => 'hidata_geodns',
+        'password' => 'CHANGE_ME',
+        'charset' => 'utf8mb4',
+    ],
+
+    'geodns' => [
+        'default_match_countries' => ['IR'],
+        'default_ttl' => 60,
+        'max_answers_per_pool' => 8,
+    ],
+
     'features' => [
         'read_only' => false,
         'backup_before_write' => true,

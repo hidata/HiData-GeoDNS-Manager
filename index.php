@@ -54,6 +54,7 @@ enforceSessionTimeout($config);
 
 sendSecurityHeaders($config, $isHttps);
 bootstrapStorage($config);
+bootstrapGeoRuleStorage($config);
 
 if (!isClientIpAllowed($config)) {
     http_response_code(403);
@@ -93,27 +94,17 @@ if (isset($_GET['download']) && $_GET['download'] === 'zone' && $zoneName !== ''
 }
 
 $zones = fetchZones($config);
+$geoRuleStats = fetchGeoRuleStats($config);
 $currentZone = $zoneName !== '' ? findZoneByName($zones, $zoneName) : null;
+$geoRules = [];
+$geoRuleGroups = [];
 $rrsets = [];
 if ($currentZone !== null) {
     $zoneDetails = fetchZone($config, $currentZone['id']);
-    $rrsets = array_values(array_filter($zoneDetails['rrsets'] ?? [], static function ($rrset) use ($recordFilter) {
-        if ($recordFilter === '') {
-            return true;
-        }
-        $needle = mb_strtolower($recordFilter);
-        $haystacks = [
-            (string)($rrset['name'] ?? ''),
-            (string)($rrset['type'] ?? ''),
-            json_encode($rrset['records'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '',
-        ];
-        foreach ($haystacks as $haystack) {
-            if (mb_stripos($haystack, $needle) !== false) {
-                return true;
-            }
-        }
-        return false;
-    }));
+    $geoRules = fetchGeoRulesForZone($config, (string)$currentZone['name']);
+    $geoRuleGroups = groupGeoRulesByFqdn($geoRules);
+    $rrsets = filterVisibleZoneRrsets($zoneDetails['rrsets'] ?? [], $geoRuleGroups);
+    $rrsets = filterZoneRrsetsBySearch($rrsets, $recordFilter);
 } else {
     $zoneDetails = null;
 }
@@ -125,6 +116,9 @@ renderPage([
     'zoneSearch' => $zoneSearch,
     'currentZone' => $currentZone,
     'zoneDetails' => $zoneDetails,
+    'geoRules' => $geoRules,
+    'geoRuleGroups' => $geoRuleGroups,
+    'geoRuleStats' => $geoRuleStats,
     'rrsets' => $rrsets,
     'recordFilter' => $recordFilter,
     'view' => $view,
@@ -167,6 +161,28 @@ function validateConfigOrFail(array $config): void
         if (empty($config['storage'][$storageKey])) {
             $errors[] = 'storage.' . $storageKey . ' is required.';
         }
+    }
+
+    $database = $config['database'] ?? [];
+    if (trim((string)($database['host'] ?? '')) === '') {
+        $errors[] = 'database.host is required.';
+    }
+    $port = (int)($database['port'] ?? 0);
+    if ($port < 1 || $port > 65535) {
+        $errors[] = 'database.port must be between 1 and 65535.';
+    }
+    foreach (['name', 'username', 'password'] as $databaseKey) {
+        if (trim((string)($database[$databaseKey] ?? '')) === '') {
+            $errors[] = 'database.' . $databaseKey . ' is required.';
+        }
+    }
+    if (($database['password'] ?? null) === 'CHANGE_ME') {
+        $errors[] = 'database.password must be configured.';
+    }
+
+    $maxAnswersPerPool = (int)($config['geodns']['max_answers_per_pool'] ?? 8);
+    if ($maxAnswersPerPool < 1 || $maxAnswersPerPool > 32) {
+        $errors[] = 'geodns.max_answers_per_pool must be between 1 and 32.';
     }
 
     if ($errors !== []) {
@@ -229,6 +245,65 @@ function bootstrapStorage(array $config): void
             renderFatalPage('Storage error', 'A required storage directory is not writable by PHP.', [$dir]);
         }
     }
+}
+
+function bootstrapGeoRuleStorage(array $config): void
+{
+    try {
+        $pdo = geoDb($config);
+        $pdo->exec(<<<'SQL'
+CREATE TABLE IF NOT EXISTS hidata_geo_rules (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    zone_name VARCHAR(255) NOT NULL,
+    fqdn VARCHAR(255) NOT NULL,
+    record_type VARCHAR(10) NOT NULL,
+    ttl INT UNSIGNED NOT NULL DEFAULT 60,
+    country_codes VARCHAR(128) NOT NULL,
+    country_answers_json LONGTEXT NOT NULL,
+    default_answers_json LONGTEXT NOT NULL,
+    health_check_port SMALLINT UNSIGNED DEFAULT NULL,
+    is_enabled TINYINT(1) NOT NULL DEFAULT 1,
+    last_sync_error TEXT DEFAULT NULL,
+    last_synced_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_hidata_geo_rules_zone_fqdn_type (zone_name, fqdn, record_type),
+    KEY idx_hidata_geo_rules_zone_name (zone_name),
+    KEY idx_hidata_geo_rules_zone_fqdn (zone_name, fqdn)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+SQL);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        renderFatalPage('Database error', 'Failed to initialize the GeoDNS rule database.', [$e->getMessage()]);
+    }
+}
+
+function geoDb(array $config): PDO
+{
+    static $connections = [];
+
+    $database = $config['database'] ?? [];
+    $host = trim((string)($database['host'] ?? '127.0.0.1'));
+    $port = (int)($database['port'] ?? 3306);
+    $name = trim((string)($database['name'] ?? ''));
+    $username = trim((string)($database['username'] ?? ''));
+    $password = (string)($database['password'] ?? '');
+    $charset = trim((string)($database['charset'] ?? 'utf8mb4'));
+    $key = implode('|', [$host, (string)$port, $name, $username, $charset, md5($password)]);
+
+    if (isset($connections[$key]) && $connections[$key] instanceof PDO) {
+        return $connections[$key];
+    }
+
+    $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=%s', $host, $port, $name, $charset);
+    $connections[$key] = new PDO($dsn, $username, $password, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES => false,
+    ]);
+
+    return $connections[$key];
 }
 
 function renderFatalPage(string $title, string $message, array $details = []): never
@@ -550,6 +625,7 @@ function handleMutation(array $config): never
                 guardWritableZone($config, $zone);
                 backupZoneSnapshot($config, (string)$zone['id'], 'delete');
                 pdnsRequest($config, 'DELETE', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']));
+                deleteGeoRulesForZone($config, (string)$zone['name']);
                 audit($config, 'delete_zone', ['zone' => $zone['name']]);
                 $_SESSION['flash'] = ['type' => 'success', 'message' => 'Zone deleted successfully.'];
                 redirect('index.php');
@@ -560,6 +636,7 @@ function handleMutation(array $config): never
                 $zone = fetchZone($config, $zoneName);
                 guardWritableZone($config, $zone);
                 $payload = buildRrsetPayloadFromPost($zone['name']);
+                guardManualRrsetMutationsAgainstGeoRules($config, (string)$zone['name'], [$payload], $action);
                 backupZoneSnapshot($config, (string)$zone['id'], 'change');
                 pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
                     'rrsets' => [$payload],
@@ -578,6 +655,10 @@ function handleMutation(array $config): never
                 if ($type === '') {
                     throw new RuntimeException('Record type is required for deletion.');
                 }
+                guardManualRrsetMutationsAgainstGeoRules($config, (string)$zone['name'], [[
+                    'name' => $name,
+                    'type' => $type,
+                ]], 'delete_rrset');
                 backupZoneSnapshot($config, (string)$zone['id'], 'change');
                 pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
                     'rrsets' => [[
@@ -594,6 +675,70 @@ function handleMutation(array $config): never
             case 'import_zone_file':
                 $importResult = importZoneFileFromPost($config);
                 $_SESSION['flash'] = ['type' => 'success', 'message' => summarizeZoneImportResult($importResult)];
+                break;
+
+            case 'create_geo_rule':
+                $zoneName = requirePostedZoneName();
+                $zone = fetchZone($config, $zoneName);
+                guardWritableZone($config, $zone);
+                $createdRule = createGeoRuleFromPost($config, $zone);
+                audit($config, 'create_geo_rule', [
+                    'zone' => $zone['name'],
+                    'fqdn' => $createdRule['fqdn'],
+                    'record_type' => $createdRule['record_type'],
+                ]);
+                $_SESSION['flash'] = ['type' => 'success', 'message' => 'GeoDNS rule created and synced successfully.'];
+                break;
+
+            case 'update_geo_rule':
+                $zoneName = requirePostedZoneName();
+                $zone = fetchZone($config, $zoneName);
+                guardWritableZone($config, $zone);
+                $updatedRule = updateGeoRuleFromPost($config, $zone);
+                audit($config, 'update_geo_rule', [
+                    'zone' => $zone['name'],
+                    'fqdn' => $updatedRule['fqdn'],
+                    'record_type' => $updatedRule['record_type'],
+                ]);
+                $_SESSION['flash'] = ['type' => 'success', 'message' => 'GeoDNS rule updated and synced successfully.'];
+                break;
+
+            case 'delete_geo_rule':
+                $zoneName = requirePostedZoneName();
+                $zone = fetchZone($config, $zoneName);
+                guardWritableZone($config, $zone);
+                $deletedRule = deleteGeoRuleFromPost($config, $zone);
+                audit($config, 'delete_geo_rule', [
+                    'zone' => $zone['name'],
+                    'fqdn' => $deletedRule['fqdn'],
+                    'record_type' => $deletedRule['record_type'],
+                ]);
+                $_SESSION['flash'] = ['type' => 'success', 'message' => 'GeoDNS rule deleted successfully.'];
+                break;
+
+            case 'sync_geo_rule':
+                $zoneName = requirePostedZoneName();
+                $zone = fetchZone($config, $zoneName);
+                guardWritableZone($config, $zone);
+                $syncedRule = syncGeoRuleFromPost($config, $zone);
+                audit($config, 'sync_geo_rule', [
+                    'zone' => $zone['name'],
+                    'fqdn' => $syncedRule['fqdn'],
+                    'record_type' => $syncedRule['record_type'],
+                ]);
+                $_SESSION['flash'] = ['type' => 'success', 'message' => 'GeoDNS rule set synced successfully.'];
+                break;
+
+            case 'sync_geo_zone':
+                $zoneName = requirePostedZoneName();
+                $zone = fetchZone($config, $zoneName);
+                guardWritableZone($config, $zone);
+                $syncResult = syncGeoZoneFromPost($config, $zone);
+                audit($config, 'sync_geo_zone', [
+                    'zone' => $zone['name'],
+                    'synced_sets' => $syncResult['synced_sets'],
+                ]);
+                $_SESSION['flash'] = ['type' => 'success', 'message' => $syncResult['message']];
                 break;
 
             case 'rectify_zone':
@@ -732,6 +877,7 @@ function importZoneFileFromPost(array $config): array
         'include_soa' => !empty($_POST['import_soa']),
         'include_ns' => !empty($_POST['import_ns']),
     ]);
+    guardManualRrsetMutationsAgainstGeoRules($config, (string)$zone['name'], $result['rrsets'], 'import_zone_file');
 
     backupZoneSnapshot($config, (string)$zone['id'], 'import');
     pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
@@ -1175,6 +1321,9 @@ function buildRrsetPayloadFromPost(string $zoneName): array
     if ($type === '') {
         throw new RuntimeException('Record type is required.');
     }
+    if (!in_array($type, manualRecordTypes(), true)) {
+        throw new RuntimeException('Unsupported record type for manual editing.');
+    }
     if ($ttl < 1 || $ttl > 2147483647) {
         throw new RuntimeException('TTL must be between 1 and 2147483647.');
     }
@@ -1337,6 +1486,711 @@ function displayRelativeName(string $fqdn, string $zoneName): string
         return substr(rtrim($fqdn, '.'), 0, -strlen($suffix));
     }
     return rtrim($fqdn, '.');
+}
+
+function fetchGeoRuleStats(array $config): array
+{
+    $row = geoDb($config)->query(
+        'SELECT COUNT(*) AS total_rules, COALESCE(SUM(CASE WHEN is_enabled = 1 THEN 1 ELSE 0 END), 0) AS enabled_rules FROM hidata_geo_rules'
+    )->fetch();
+
+    return [
+        'total_rules' => (int)($row['total_rules'] ?? 0),
+        'enabled_rules' => (int)($row['enabled_rules'] ?? 0),
+    ];
+}
+
+function fetchGeoRulesForZone(array $config, string $zoneName): array
+{
+    $stmt = geoDb($config)->prepare(
+        "SELECT * FROM hidata_geo_rules WHERE zone_name = :zone_name ORDER BY fqdn ASC, FIELD(record_type, 'A', 'AAAA'), id ASC"
+    );
+    $stmt->execute(['zone_name' => ensureTrailingDot($zoneName)]);
+    $rows = $stmt->fetchAll();
+    return array_map(static fn(array $row): array => hydrateGeoRuleRow($row), $rows ?: []);
+}
+
+function fetchGeoRulesByFqdn(array $config, string $zoneName, string $fqdn, ?int $excludeId = null): array
+{
+    $pdo = geoDb($config);
+    $sql = "SELECT * FROM hidata_geo_rules WHERE zone_name = :zone_name AND fqdn = :fqdn";
+    $params = [
+        'zone_name' => ensureTrailingDot($zoneName),
+        'fqdn' => ensureTrailingDot($fqdn),
+    ];
+    if ($excludeId !== null) {
+        $sql .= ' AND id != :exclude_id';
+        $params['exclude_id'] = $excludeId;
+    }
+    $sql .= " ORDER BY FIELD(record_type, 'A', 'AAAA'), id ASC";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll();
+    return array_map(static fn(array $row): array => hydrateGeoRuleRow($row), $rows ?: []);
+}
+
+function fetchGeoRuleById(array $config, int $ruleId, ?string $zoneName = null): array
+{
+    if ($ruleId < 1) {
+        throw new RuntimeException('A valid GeoDNS rule id is required.');
+    }
+
+    $sql = 'SELECT * FROM hidata_geo_rules WHERE id = :id';
+    $params = ['id' => $ruleId];
+    if ($zoneName !== null) {
+        $sql .= ' AND zone_name = :zone_name';
+        $params['zone_name'] = ensureTrailingDot($zoneName);
+    }
+
+    $stmt = geoDb($config)->prepare($sql);
+    $stmt->execute($params);
+    $row = $stmt->fetch();
+    if (!is_array($row)) {
+        throw new RuntimeException('GeoDNS rule not found.');
+    }
+
+    return hydrateGeoRuleRow($row);
+}
+
+function requirePostedGeoRuleId(): int
+{
+    $ruleId = (int)($_POST['geo_rule_id'] ?? 0);
+    if ($ruleId < 1) {
+        throw new RuntimeException('A valid GeoDNS rule id is required.');
+    }
+    return $ruleId;
+}
+
+function hydrateGeoRuleRow(array $row): array
+{
+    $zoneName = ensureTrailingDot((string)($row['zone_name'] ?? ''));
+    $fqdn = ensureTrailingDot((string)($row['fqdn'] ?? ''));
+
+    return [
+        'id' => (int)($row['id'] ?? 0),
+        'zone_name' => $zoneName,
+        'fqdn' => $fqdn,
+        'display_name' => displayRelativeName($fqdn, $zoneName),
+        'record_type' => strtoupper(trim((string)($row['record_type'] ?? 'A'))),
+        'ttl' => (int)($row['ttl'] ?? 60),
+        'country_codes' => normalizeCountryCodeList((string)($row['country_codes'] ?? 'IR'), ['IR']),
+        'country_answers' => decodeGeoStringList((string)($row['country_answers_json'] ?? '[]')),
+        'default_answers' => decodeGeoStringList((string)($row['default_answers_json'] ?? '[]')),
+        'health_check_port' => ($row['health_check_port'] ?? null) === null ? null : (int)$row['health_check_port'],
+        'is_enabled' => (bool)($row['is_enabled'] ?? false),
+        'last_sync_error' => trim((string)($row['last_sync_error'] ?? '')),
+        'last_synced_at' => $row['last_synced_at'] !== null ? (string)$row['last_synced_at'] : null,
+        'created_at' => (string)($row['created_at'] ?? ''),
+        'updated_at' => (string)($row['updated_at'] ?? ''),
+    ];
+}
+
+function groupGeoRulesByFqdn(array $geoRules): array
+{
+    $grouped = [];
+    foreach ($geoRules as $rule) {
+        $grouped[(string)$rule['fqdn']][] = $rule;
+    }
+    return $grouped;
+}
+
+function groupGeoRulesByKey(array $geoRules): array
+{
+    $grouped = [];
+    foreach ($geoRules as $rule) {
+        $grouped[(string)$rule['fqdn'] . '|' . strtoupper((string)$rule['record_type'])] = $rule;
+    }
+    return $grouped;
+}
+
+function filterVisibleZoneRrsets(array $rrsets, array $geoRuleGroups): array
+{
+    return array_values(array_filter($rrsets, static function ($rrset) use ($geoRuleGroups) {
+        $name = ensureTrailingDot((string)($rrset['name'] ?? ''));
+        $type = strtoupper(trim((string)($rrset['type'] ?? '')));
+        return !($type === 'LUA' && isset($geoRuleGroups[$name]));
+    }));
+}
+
+function filterZoneRrsetsBySearch(array $rrsets, string $recordFilter): array
+{
+    if ($recordFilter === '') {
+        return $rrsets;
+    }
+
+    $needle = mb_strtolower($recordFilter);
+    return array_values(array_filter($rrsets, static function ($rrset) use ($needle) {
+        $haystacks = [
+            (string)($rrset['name'] ?? ''),
+            (string)($rrset['type'] ?? ''),
+            json_encode($rrset['records'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '',
+        ];
+        foreach ($haystacks as $haystack) {
+            if (mb_stripos($haystack, $needle) !== false) {
+                return true;
+            }
+        }
+        return false;
+    }));
+}
+
+function createGeoRuleFromPost(array $config, array $zone): array
+{
+    $payload = buildGeoRulePayloadFromPost($config, $zone);
+    backupZoneSnapshot($config, (string)$zone['id'], 'geo-create');
+    $rule = saveGeoRulePayload($config, $payload, null);
+    syncGeoRuleSet($config, $zone, (string)$rule['fqdn']);
+    return fetchGeoRuleById($config, (int)$rule['id'], (string)$zone['name']);
+}
+
+function updateGeoRuleFromPost(array $config, array $zone): array
+{
+    $existingRule = fetchGeoRuleById($config, requirePostedGeoRuleId(), (string)$zone['name']);
+    $payload = buildGeoRulePayloadFromPost($config, $zone, $existingRule);
+    backupZoneSnapshot($config, (string)$zone['id'], 'geo-update');
+    $rule = saveGeoRulePayload($config, $payload, $existingRule);
+    syncGeoRuleSet($config, $zone, (string)$rule['fqdn']);
+    if ($existingRule['fqdn'] !== $rule['fqdn']) {
+        syncGeoRuleSet($config, $zone, (string)$existingRule['fqdn']);
+    }
+    return fetchGeoRuleById($config, (int)$rule['id'], (string)$zone['name']);
+}
+
+function deleteGeoRuleFromPost(array $config, array $zone): array
+{
+    $rule = fetchGeoRuleById($config, requirePostedGeoRuleId(), (string)$zone['name']);
+    backupZoneSnapshot($config, (string)$zone['id'], 'geo-delete');
+
+    $remainingRules = fetchGeoRulesByFqdn($config, (string)$zone['name'], (string)$rule['fqdn'], (int)$rule['id']);
+    try {
+        applyGeoRuleSetToPowerDns($config, $zone, (string)$rule['fqdn'], $remainingRules);
+        markGeoRuleSetSyncSuccess($config, (string)$zone['name'], (string)$rule['fqdn']);
+    } catch (Throwable $e) {
+        markGeoRuleSetSyncError($config, (string)$zone['name'], (string)$rule['fqdn'], $e->getMessage());
+        throw new RuntimeException('Failed to remove the GeoDNS rule from PowerDNS: ' . $e->getMessage());
+    }
+
+    deleteGeoRuleById($config, (int)$rule['id']);
+    return $rule;
+}
+
+function syncGeoRuleFromPost(array $config, array $zone): array
+{
+    $rule = fetchGeoRuleById($config, requirePostedGeoRuleId(), (string)$zone['name']);
+    backupZoneSnapshot($config, (string)$zone['id'], 'geo-sync');
+    syncGeoRuleSet($config, $zone, (string)$rule['fqdn']);
+    return fetchGeoRuleById($config, (int)$rule['id'], (string)$zone['name']);
+}
+
+function syncGeoZoneFromPost(array $config, array $zone): array
+{
+    $geoRules = fetchGeoRulesForZone($config, (string)$zone['name']);
+    $ruleGroups = groupGeoRulesByFqdn($geoRules);
+    if ($ruleGroups === []) {
+        return [
+            'synced_sets' => 0,
+            'message' => 'No GeoDNS rules exist for this zone yet.',
+        ];
+    }
+
+    backupZoneSnapshot($config, (string)$zone['id'], 'geo-sync-zone');
+
+    $syncedSets = 0;
+    $errors = [];
+    foreach (array_keys($ruleGroups) as $fqdn) {
+        try {
+            syncGeoRuleSet($config, $zone, (string)$fqdn);
+            $syncedSets++;
+        } catch (Throwable $e) {
+            $errors[] = rtrim((string)$fqdn, '.') . ': ' . $e->getMessage();
+        }
+    }
+
+    if ($errors !== []) {
+        throw new RuntimeException(sprintf(
+            'Synced %d GeoDNS rule set(s), but %d failed: %s',
+            $syncedSets,
+            count($errors),
+            implode(' | ', $errors)
+        ));
+    }
+
+    return [
+        'synced_sets' => $syncedSets,
+        'message' => sprintf('Synced %d GeoDNS rule set(s) for this zone.', $syncedSets),
+    ];
+}
+
+function buildGeoRulePayloadFromPost(array $config, array $zone, ?array $existingRule = null): array
+{
+    $zoneName = ensureTrailingDot((string)($zone['name'] ?? ''));
+    $name = trim((string)($_POST['geo_name'] ?? '@'));
+    if ($name === '') {
+        $name = '@';
+    }
+    $fqdn = fqdnFromInput($name, $zoneName);
+    if (!isNameInsideZone($fqdn, $zoneName)) {
+        throw new RuntimeException('GeoDNS rules may only target records inside the selected zone.');
+    }
+
+    $recordType = strtoupper(trim((string)($_POST['geo_record_type'] ?? 'A')));
+    if (!in_array($recordType, ['A', 'AAAA'], true)) {
+        throw new RuntimeException('GeoDNS rules currently support only A and AAAA answers.');
+    }
+
+    $ttl = (int)($_POST['geo_ttl'] ?? defaultGeoRuleTtl($config));
+    if ($ttl < 1 || $ttl > 2147483647) {
+        throw new RuntimeException('GeoDNS TTL must be between 1 and 2147483647.');
+    }
+
+    $countryCodes = normalizeCountryCodeList(
+        (string)($_POST['geo_country_codes'] ?? ''),
+        defaultGeoCountryCodes($config)
+    );
+    $countryAnswers = normalizeGeoAnswerPool(
+        (string)($_POST['geo_country_answers'] ?? ''),
+        $recordType,
+        $config,
+        'country-matched'
+    );
+    $defaultAnswers = normalizeGeoAnswerPool(
+        (string)($_POST['geo_default_answers'] ?? ''),
+        $recordType,
+        $config,
+        'default'
+    );
+
+    $healthCheckPortRaw = trim((string)($_POST['geo_health_check_port'] ?? ''));
+    $healthCheckPort = null;
+    if ($healthCheckPortRaw !== '') {
+        if (!ctype_digit($healthCheckPortRaw)) {
+            throw new RuntimeException('Health check port must be numeric.');
+        }
+        $healthCheckPort = (int)$healthCheckPortRaw;
+        if ($healthCheckPort < 1 || $healthCheckPort > 65535) {
+            throw new RuntimeException('Health check port must be between 1 and 65535.');
+        }
+    }
+
+    $payload = [
+        'zone_name' => $zoneName,
+        'fqdn' => $fqdn,
+        'record_type' => $recordType,
+        'ttl' => $ttl,
+        'country_codes' => $countryCodes,
+        'country_answers' => $countryAnswers,
+        'default_answers' => $defaultAnswers,
+        'health_check_port' => $healthCheckPort,
+        'is_enabled' => !empty($_POST['geo_enabled']),
+    ];
+
+    guardGeoRuleConflicts($config, $zone, $payload, $existingRule);
+    return $payload;
+}
+
+function defaultGeoCountryCodes(array $config): array
+{
+    $defaults = $config['geodns']['default_match_countries'] ?? ['IR'];
+    if (!is_array($defaults) || $defaults === []) {
+        return ['IR'];
+    }
+
+    $values = [];
+    foreach ($defaults as $value) {
+        $value = strtoupper(trim((string)$value));
+        if ($value !== '') {
+            $values[] = $value;
+        }
+    }
+
+    return normalizeCountryCodeList(implode(',', $values), ['IR']);
+}
+
+function defaultGeoRuleTtl(array $config): int
+{
+    $ttl = (int)($config['geodns']['default_ttl'] ?? 60);
+    return $ttl > 0 ? $ttl : 60;
+}
+
+function normalizeCountryCodeList(string $raw, array $fallback): array
+{
+    $input = trim($raw);
+    if ($input === '') {
+        $input = implode(',', $fallback);
+    }
+
+    $tokens = preg_split('/[\s,]+/', strtoupper($input)) ?: [];
+    $codes = [];
+    foreach ($tokens as $token) {
+        $token = trim($token);
+        if ($token === '') {
+            continue;
+        }
+        if (!preg_match('/^[A-Z]{2}$/', $token)) {
+            throw new RuntimeException('Country codes must use two-letter ISO values such as IR or DE.');
+        }
+        if (!in_array($token, $codes, true)) {
+            $codes[] = $token;
+        }
+    }
+
+    if ($codes === []) {
+        throw new RuntimeException('At least one country code is required for a GeoDNS rule.');
+    }
+
+    return $codes;
+}
+
+function normalizeGeoAnswerPool(string $raw, string $recordType, array $config, string $label): array
+{
+    $values = parseTextareaLines($raw);
+    if ($values === []) {
+        throw new RuntimeException('Provide at least one ' . $recordType . ' answer for the ' . $label . ' pool.');
+    }
+
+    $normalized = [];
+    foreach ($values as $value) {
+        $normalizedValue = normalizeRecordContent($recordType, $value);
+        if (!in_array($normalizedValue, $normalized, true)) {
+            $normalized[] = $normalizedValue;
+        }
+    }
+
+    $maxAnswers = (int)($config['geodns']['max_answers_per_pool'] ?? 8);
+    if (count($normalized) > $maxAnswers) {
+        throw new RuntimeException(sprintf('Each GeoDNS pool may contain at most %d answers.', $maxAnswers));
+    }
+
+    return $normalized;
+}
+
+function decodeGeoStringList(string $raw): array
+{
+    if ($raw === '') {
+        return [];
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return [];
+    }
+
+    $values = [];
+    foreach ($decoded as $value) {
+        if (is_scalar($value)) {
+            $stringValue = trim((string)$value);
+            if ($stringValue !== '' && !in_array($stringValue, $values, true)) {
+                $values[] = $stringValue;
+            }
+        }
+    }
+
+    return $values;
+}
+
+function encodeGeoStringList(array $values): string
+{
+    return json_encode(array_values($values), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+}
+
+function guardGeoRuleConflicts(array $config, array $zone, array $payload, ?array $existingRule = null): void
+{
+    $zoneName = ensureTrailingDot((string)($zone['name'] ?? ''));
+    $fqdn = (string)$payload['fqdn'];
+    $recordType = strtoupper((string)$payload['record_type']);
+    $rrsetIndex = [];
+    foreach (($zone['rrsets'] ?? []) as $rrset) {
+        $rrsetIndex[ensureTrailingDot((string)($rrset['name'] ?? '')) . '|' . strtoupper((string)($rrset['type'] ?? ''))] = $rrset;
+    }
+
+    if (isset($rrsetIndex[$fqdn . '|CNAME'])) {
+        throw new RuntimeException('This hostname already has a CNAME RRset. Remove the CNAME before enabling GeoDNS here.');
+    }
+
+    $sameNameRules = fetchGeoRulesByFqdn($config, $zoneName, $fqdn, $existingRule['id'] ?? null);
+    $ownsCurrentLuaRrset = $existingRule !== null && ensureTrailingDot((string)$existingRule['fqdn']) === $fqdn;
+    if (!$ownsCurrentLuaRrset && $sameNameRules === [] && isset($rrsetIndex[$fqdn . '|LUA'])) {
+        throw new RuntimeException('This hostname already has a raw LUA RRset. Remove it before managing it through the GeoDNS panel.');
+    }
+
+    if (isset($rrsetIndex[$fqdn . '|' . $recordType])) {
+        throw new RuntimeException(sprintf(
+            'A regular %s RRset already exists for %s. Remove it before creating a GeoDNS rule for the same answer type.',
+            $recordType,
+            rtrim($fqdn, '.')
+        ));
+    }
+
+    foreach ($sameNameRules as $rule) {
+        if ((int)$rule['ttl'] !== (int)$payload['ttl']) {
+            throw new RuntimeException('GeoDNS rules for the same hostname share one LUA RRset, so their TTL must match.');
+        }
+    }
+}
+
+function guardManualRrsetMutationsAgainstGeoRules(array $config, string $zoneName, array $rrsets, string $context): void
+{
+    $geoRules = fetchGeoRulesForZone($config, $zoneName);
+    if ($geoRules === []) {
+        return;
+    }
+
+    $rulesByFqdn = groupGeoRulesByFqdn($geoRules);
+    $rulesByKey = groupGeoRulesByKey($geoRules);
+
+    foreach ($rrsets as $rrset) {
+        $fqdn = ensureTrailingDot((string)($rrset['name'] ?? ''));
+        $type = strtoupper(trim((string)($rrset['type'] ?? '')));
+        if ($fqdn === '.' || $type === '') {
+            continue;
+        }
+
+        if ($type === 'CNAME' && isset($rulesByFqdn[$fqdn])) {
+            throw new RuntimeException('This hostname is already managed by GeoDNS. Remove the GeoDNS rule before changing it to a CNAME.');
+        }
+
+        if ($type === 'LUA' && isset($rulesByFqdn[$fqdn])) {
+            throw new RuntimeException('Managed GeoDNS LUA RRsets can only be changed from the GeoDNS Rules section.');
+        }
+
+        if (isset($rulesByKey[$fqdn . '|' . $type])) {
+            throw new RuntimeException(sprintf(
+                'The %s RRset for %s is managed by GeoDNS. Use the GeoDNS Rules section instead of %s.',
+                $type,
+                rtrim($fqdn, '.'),
+                str_replace('_', ' ', $context)
+            ));
+        }
+    }
+}
+
+function syncGeoRuleSet(array $config, array $zone, string $fqdn): void
+{
+    $zoneName = ensureTrailingDot((string)($zone['name'] ?? ''));
+    $fqdn = ensureTrailingDot($fqdn);
+    $rules = fetchGeoRulesByFqdn($config, $zoneName, $fqdn);
+
+    try {
+        applyGeoRuleSetToPowerDns($config, $zone, $fqdn, $rules);
+        markGeoRuleSetSyncSuccess($config, $zoneName, $fqdn);
+    } catch (Throwable $e) {
+        markGeoRuleSetSyncError($config, $zoneName, $fqdn, $e->getMessage());
+        throw new RuntimeException('PowerDNS sync failed for ' . rtrim($fqdn, '.') . ': ' . $e->getMessage());
+    }
+}
+
+function applyGeoRuleSetToPowerDns(array $config, array $zone, string $fqdn, array $rules): void
+{
+    $enabledRules = array_values(array_filter($rules, static fn(array $rule): bool => (bool)$rule['is_enabled']));
+    if ($enabledRules === []) {
+        pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
+            'rrsets' => [[
+                'name' => ensureTrailingDot($fqdn),
+                'type' => 'LUA',
+                'changetype' => 'DELETE',
+            ]],
+        ]);
+        maybeRectify($config, $zone);
+        return;
+    }
+
+    $ttl = (int)$enabledRules[0]['ttl'];
+    foreach ($enabledRules as $rule) {
+        if ((int)$rule['ttl'] !== $ttl) {
+            throw new RuntimeException('GeoDNS rules for the same hostname must use the same TTL.');
+        }
+    }
+
+    $records = [];
+    foreach (sortGeoRulesForSync($enabledRules) as $rule) {
+        $records[] = [
+            'content' => buildGeoLuaRecordContent($rule),
+            'disabled' => false,
+        ];
+    }
+
+    pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
+        'rrsets' => [[
+            'name' => ensureTrailingDot($fqdn),
+            'type' => 'LUA',
+            'ttl' => $ttl,
+            'changetype' => 'REPLACE',
+            'records' => $records,
+        ]],
+    ]);
+    maybeRectify($config, $zone);
+}
+
+function buildGeoLuaRecordContent(array $rule): string
+{
+    $countryExpression = geoLuaCountryExpression($rule['country_codes']);
+    $countryPool = geoLuaStringArray($rule['country_answers']);
+    $defaultPool = geoLuaStringArray($rule['default_answers']);
+    $recordType = strtoupper((string)$rule['record_type']);
+
+    if ($rule['health_check_port'] !== null) {
+        $port = (int)$rule['health_check_port'];
+        $matchedExpression = geoLuaFailoverExpression($port, $countryPool, $defaultPool);
+        $defaultExpression = geoLuaFailoverExpression($port, $defaultPool, $countryPool);
+    } else {
+        $matchedExpression = $countryPool;
+        $defaultExpression = $defaultPool;
+    }
+
+    $script = sprintf(
+        ';if country(%s) then return %s else return %s end',
+        $countryExpression,
+        $matchedExpression,
+        $defaultExpression
+    );
+
+    return $recordType . ' "' . str_replace('"', '\"', $script) . '"';
+}
+
+function geoLuaCountryExpression(array $countryCodes): string
+{
+    if (count($countryCodes) === 1) {
+        return geoLuaQuote((string)$countryCodes[0]);
+    }
+    return geoLuaStringArray($countryCodes);
+}
+
+function geoLuaFailoverExpression(int $port, string $primaryPool, string $secondaryPool): string
+{
+    return sprintf(
+        "ifportup(%d, {%s, %s}, {selector='all', backupSelector='all'})",
+        $port,
+        $primaryPool,
+        $secondaryPool
+    );
+}
+
+function geoLuaStringArray(array $values): string
+{
+    $quoted = array_map(static fn(string $value): string => geoLuaQuote($value), $values);
+    return '{' . implode(',', $quoted) . '}';
+}
+
+function geoLuaQuote(string $value): string
+{
+    return "'" . str_replace(['\\', "'"], ['\\\\', "\\'"], $value) . "'";
+}
+
+function sortGeoRulesForSync(array $rules): array
+{
+    usort($rules, static function (array $a, array $b): int {
+        $order = ['A' => 0, 'AAAA' => 1];
+        $left = $order[strtoupper((string)($a['record_type'] ?? ''))] ?? 99;
+        $right = $order[strtoupper((string)($b['record_type'] ?? ''))] ?? 99;
+        return $left <=> $right ?: ((int)($a['id'] ?? 0) <=> (int)($b['id'] ?? 0));
+    });
+    return $rules;
+}
+
+function markGeoRuleSetSyncSuccess(array $config, string $zoneName, string $fqdn): void
+{
+    $stmt = geoDb($config)->prepare(
+        'UPDATE hidata_geo_rules SET last_sync_error = NULL, last_synced_at = :last_synced_at WHERE zone_name = :zone_name AND fqdn = :fqdn'
+    );
+    $stmt->execute([
+        'last_synced_at' => date('Y-m-d H:i:s'),
+        'zone_name' => ensureTrailingDot($zoneName),
+        'fqdn' => ensureTrailingDot($fqdn),
+    ]);
+}
+
+function markGeoRuleSetSyncError(array $config, string $zoneName, string $fqdn, string $error): void
+{
+    $stmt = geoDb($config)->prepare(
+        'UPDATE hidata_geo_rules SET last_sync_error = :last_sync_error WHERE zone_name = :zone_name AND fqdn = :fqdn'
+    );
+    $stmt->execute([
+        'last_sync_error' => trim($error),
+        'zone_name' => ensureTrailingDot($zoneName),
+        'fqdn' => ensureTrailingDot($fqdn),
+    ]);
+}
+
+function saveGeoRulePayload(array $config, array $payload, ?array $existingRule = null): array
+{
+    $pdo = geoDb($config);
+    $now = date('Y-m-d H:i:s');
+
+    try {
+        if ($existingRule === null) {
+            $stmt = $pdo->prepare(
+                'INSERT INTO hidata_geo_rules (
+                    zone_name, fqdn, record_type, ttl, country_codes, country_answers_json, default_answers_json,
+                    health_check_port, is_enabled, last_sync_error, last_synced_at, created_at, updated_at
+                ) VALUES (
+                    :zone_name, :fqdn, :record_type, :ttl, :country_codes, :country_answers_json, :default_answers_json,
+                    :health_check_port, :is_enabled, NULL, NULL, :created_at, :updated_at
+                )'
+            );
+            $stmt->execute([
+                'zone_name' => (string)$payload['zone_name'],
+                'fqdn' => (string)$payload['fqdn'],
+                'record_type' => (string)$payload['record_type'],
+                'ttl' => (int)$payload['ttl'],
+                'country_codes' => implode(',', $payload['country_codes']),
+                'country_answers_json' => encodeGeoStringList($payload['country_answers']),
+                'default_answers_json' => encodeGeoStringList($payload['default_answers']),
+                'health_check_port' => $payload['health_check_port'],
+                'is_enabled' => $payload['is_enabled'] ? 1 : 0,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            return fetchGeoRuleById($config, (int)$pdo->lastInsertId(), (string)$payload['zone_name']);
+        }
+
+        $stmt = $pdo->prepare(
+            'UPDATE hidata_geo_rules SET
+                fqdn = :fqdn,
+                record_type = :record_type,
+                ttl = :ttl,
+                country_codes = :country_codes,
+                country_answers_json = :country_answers_json,
+                default_answers_json = :default_answers_json,
+                health_check_port = :health_check_port,
+                is_enabled = :is_enabled,
+                last_sync_error = NULL,
+                updated_at = :updated_at
+             WHERE id = :id AND zone_name = :zone_name'
+        );
+        $stmt->execute([
+            'fqdn' => (string)$payload['fqdn'],
+            'record_type' => (string)$payload['record_type'],
+            'ttl' => (int)$payload['ttl'],
+            'country_codes' => implode(',', $payload['country_codes']),
+            'country_answers_json' => encodeGeoStringList($payload['country_answers']),
+            'default_answers_json' => encodeGeoStringList($payload['default_answers']),
+            'health_check_port' => $payload['health_check_port'],
+            'is_enabled' => $payload['is_enabled'] ? 1 : 0,
+            'updated_at' => $now,
+            'id' => (int)$existingRule['id'],
+            'zone_name' => (string)$payload['zone_name'],
+        ]);
+
+        return fetchGeoRuleById($config, (int)$existingRule['id'], (string)$payload['zone_name']);
+    } catch (PDOException $e) {
+        if ((int)$e->getCode() === 23000) {
+            throw new RuntimeException('A GeoDNS rule for this hostname and answer type already exists.');
+        }
+        throw $e;
+    }
+}
+
+function deleteGeoRuleById(array $config, int $ruleId): void
+{
+    $stmt = geoDb($config)->prepare('DELETE FROM hidata_geo_rules WHERE id = :id');
+    $stmt->execute(['id' => $ruleId]);
+}
+
+function deleteGeoRulesForZone(array $config, string $zoneName): void
+{
+    $stmt = geoDb($config)->prepare('DELETE FROM hidata_geo_rules WHERE zone_name = :zone_name');
+    $stmt->execute(['zone_name' => ensureTrailingDot($zoneName)]);
 }
 
 function fetchZones(array $config): array
@@ -1643,6 +2497,9 @@ function renderPage(array $data): void
     $zoneSearch = $data['zoneSearch'];
     $currentZone = $data['currentZone'];
     $zoneDetails = $data['zoneDetails'];
+    $geoRules = $data['geoRules'];
+    $geoRuleGroups = $data['geoRuleGroups'];
+    $geoRuleStats = $data['geoRuleStats'];
     $rrsets = $data['rrsets'];
     $recordFilter = $data['recordFilter'];
 
@@ -1667,7 +2524,7 @@ function renderPage(array $data): void
     echo '<div class="brand">';
     echo '<div class="brand-logo">Hi</div>';
     echo '<div><div class="brand-name">' . h((string)($config['app']['name'] ?? 'HiData GeoDNS Manager')) . '</div>';
-    echo '<div class="brand-tag">PowerDNS zone and RRset manager</div></div>';
+    echo '<div class="brand-tag">GeoDNS rule and zone manager</div></div>';
     echo '</div>';
 
     echo '<form class="search-form" method="get">';
@@ -1725,12 +2582,13 @@ function renderPage(array $data): void
     if (!$currentZone || !$zoneDetails) {
         echo '<section class="panel hero">';
         echo '<div class="hero-copy">';
-        echo '<h2>Manage authoritative DNS on the same host as PowerDNS</h2>';
-        echo '<p>Create zones, inspect RRsets, export backups, and safely update records through the local PowerDNS API with audit logging and automatic pre-change exports.</p>';
+        echo '<h2>Manage authoritative DNS and IR/default GeoDNS on the same host as PowerDNS</h2>';
+        echo '<p>Create zones, manage regular RRsets, and publish country-aware GeoDNS rules that send Iran to one server and the default world path to another.</p>';
         echo '</div>';
         echo '<div class="hero-grid">';
         echo '<div class="stat-card"><span>Zones</span><strong>' . count($zones) . '</strong></div>';
-        echo '<div class="stat-card"><span>TLS verification</span><strong>' . (($config['pdns']['verify_tls'] ?? true) ? 'On' : 'Off') . '</strong></div>';
+        echo '<div class="stat-card"><span>Geo Rules</span><strong>' . (int)($geoRuleStats['total_rules'] ?? 0) . '</strong></div>';
+        echo '<div class="stat-card"><span>Geo Active</span><strong>' . (int)($geoRuleStats['enabled_rules'] ?? 0) . '</strong></div>';
         echo '<div class="stat-card"><span>Backups</span><strong>' . (($config['features']['backup_before_write'] ?? false) ? 'Enabled' : 'Disabled') . '</strong></div>';
         echo '</div>';
         echo '</section>';
@@ -1755,7 +2613,14 @@ function renderPage(array $data): void
     echo '</div>';
     echo '<div class="zone-actions">';
     if ($canModifyCurrentZone) {
-        echo '<a class="btn btn-primary" href="#" onclick="openModal(\'addModal\');return false;">Add record</a>';
+        echo '<a class="btn btn-primary" href="#" onclick="openModal(\'geoAddModal\');return false;">New Geo rule</a>';
+        echo '<form method="post" class="inline-form">';
+        echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
+        echo '<input type="hidden" name="action" value="sync_geo_zone">';
+        echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
+        echo '<button class="btn btn-ghost" type="submit">Sync GeoDNS</button>';
+        echo '</form>';
+        echo '<a class="btn btn-ghost" href="#" onclick="openModal(\'addModal\');return false;">Add record</a>';
         echo '<a class="btn btn-ghost" href="#" onclick="openModal(\'importModal\');return false;">Import TXT</a>';
     }
     echo '<a class="btn btn-ghost" href="?download=zone&amp;zone=' . urlencode(rtrim((string)$zoneDetails['name'], '.')) . '">Export zone</a>';
@@ -1777,6 +2642,8 @@ function renderPage(array $data): void
     }
     echo '</div>';
     echo '</section>';
+
+    echo renderGeoRulesSection($config, $zoneDetails, $geoRules, $canModifyCurrentZone);
 
     echo '<section class="panel">';
     echo '<div class="toolbar">';
@@ -1815,7 +2682,8 @@ function renderPage(array $data): void
             }
             echo '</div></td>';
             echo '<td><div class="action-stack">';
-            if ($canModifyCurrentZone) {
+            $rrsetType = strtoupper((string)($rrset['type'] ?? ''));
+            if ($canModifyCurrentZone && $rrsetType !== 'LUA') {
                 echo '<a class="btn btn-small btn-ghost" href="#" data-edit="' . $jsPayload . '" onclick="fillEditModal(this.dataset.edit);openModal(\'editModal\');return false;">Edit</a>';
                 echo '<form method="post" onsubmit="return confirm(\'Delete this entire RRset?\')">';
                 echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
@@ -1823,6 +2691,16 @@ function renderPage(array $data): void
                 echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
                 echo '<input type="hidden" name="name" value="' . h(displayRelativeName((string)($rrset['name'] ?? ''), (string)$zoneDetails['name'])) . '">';
                 echo '<input type="hidden" name="type" value="' . h((string)($rrset['type'] ?? '')) . '">';
+                echo '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
+                echo '</form>';
+            } elseif ($canModifyCurrentZone && $rrsetType === 'LUA') {
+                echo '<span class="small muted">Raw LUA RRsets are delete-only.</span>';
+                echo '<form method="post" onsubmit="return confirm(\'Delete this LUA RRset?\')">';
+                echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
+                echo '<input type="hidden" name="action" value="delete_rrset">';
+                echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
+                echo '<input type="hidden" name="name" value="' . h(displayRelativeName((string)($rrset['name'] ?? ''), (string)$zoneDetails['name'])) . '">';
+                echo '<input type="hidden" name="type" value="' . h((string)$rrset['type'] ?? '') . '">';
                 echo '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
                 echo '</form>';
             } else {
@@ -1839,6 +2717,8 @@ function renderPage(array $data): void
         echo buildCreateZoneModal();
     }
     if ($canModifyCurrentZone) {
+        echo buildGeoAddModal((string)$zoneDetails['name'], $config);
+        echo buildGeoEditModal((string)$zoneDetails['name']);
         echo buildImportModal((string)$zoneDetails['name']);
         echo buildAddModal((string)$zoneDetails['name']);
         echo buildEditModal((string)$zoneDetails['name']);
@@ -1847,6 +2727,123 @@ function renderPage(array $data): void
     echo '</main></div>';
     echo modalScripts();
     echo '</body></html>';
+}
+
+function renderGeoRulesSection(array $config, array $zoneDetails, array $geoRules, bool $canModifyCurrentZone): string
+{
+    $html = '<section class="panel">';
+    $html .= '<div class="section-head">';
+    $html .= '<div>';
+    $html .= '<h2 class="section-title">GeoDNS Rules</h2>';
+    $html .= '<p class="section-copy">Geo decisions use the resolver IP or EDNS Client Subnet when available. For a classic IR/default setup, keep one Iran pool and one default pool here.</p>';
+    $html .= '</div>';
+    $html .= '<div class="rule-summary"><span class="pill">Rules ' . count($geoRules) . '</span></div>';
+    $html .= '</div>';
+
+    if ($geoRules === []) {
+        $html .= '<div class="empty">No GeoDNS rules exist for this zone yet. Add one for <code>@</code> or <code>www</code> to send <code>IR</code> to the Iran server and the default path to Europe.</div>';
+        $html .= '</section>';
+        return $html;
+    }
+
+    $html .= '<div class="table-wrap"><table class="geo-table"><thead><tr><th>Name</th><th>Type</th><th>Countries</th><th>Match Pool</th><th>Default Pool</th><th>TTL</th><th>Health</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
+    foreach ($geoRules as $rule) {
+        $editPayload = htmlspecialchars(json_encode([
+            'id' => (int)$rule['id'],
+            'name' => (string)$rule['display_name'],
+            'record_type' => (string)$rule['record_type'],
+            'ttl' => (int)$rule['ttl'],
+            'country_codes' => implode(',', $rule['country_codes']),
+            'country_answers' => implode("\n", $rule['country_answers']),
+            'default_answers' => implode("\n", $rule['default_answers']),
+            'health_check_port' => $rule['health_check_port'],
+            'is_enabled' => (bool)$rule['is_enabled'],
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        $healthLabel = $rule['health_check_port'] !== null
+            ? 'TCP ' . (int)$rule['health_check_port'] . ' failover'
+            : 'Off';
+
+        $html .= '<tr>';
+        $html .= '<td><div class="mono">' . h((string)$rule['display_name']) . '</div></td>';
+        $html .= '<td><span class="type-chip">' . h((string)$rule['record_type']) . '</span></td>';
+        $html .= '<td>' . h(implode(', ', $rule['country_codes'])) . '</td>';
+        $html .= '<td>' . renderPoolLines($rule['country_answers']) . '</td>';
+        $html .= '<td>' . renderPoolLines($rule['default_answers']) . '</td>';
+        $html .= '<td>' . h((string)$rule['ttl']) . '</td>';
+        $html .= '<td>' . h($healthLabel) . '</td>';
+        $html .= '<td>' . renderGeoRuleStatus($rule) . '</td>';
+        $html .= '<td><div class="action-stack">';
+        if ($canModifyCurrentZone) {
+            $html .= '<a class="btn btn-small btn-ghost" href="#" data-geo-edit="' . $editPayload . '" onclick="fillGeoEditModal(this.dataset.geoEdit);openModal(\'geoEditModal\');return false;">Edit</a>';
+            $html .= '<form method="post">';
+            $html .= '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
+            $html .= '<input type="hidden" name="action" value="sync_geo_rule">';
+            $html .= '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
+            $html .= '<input type="hidden" name="geo_rule_id" value="' . (int)$rule['id'] . '">';
+            $html .= '<button class="btn btn-small btn-ghost" type="submit">Sync</button>';
+            $html .= '</form>';
+            $html .= '<form method="post" onsubmit="return confirm(\'Delete this GeoDNS rule?\')">';
+            $html .= '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
+            $html .= '<input type="hidden" name="action" value="delete_geo_rule">';
+            $html .= '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
+            $html .= '<input type="hidden" name="geo_rule_id" value="' . (int)$rule['id'] . '">';
+            $html .= '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
+            $html .= '</form>';
+        } else {
+            $html .= '<span class="small muted">Writes disabled for this zone.</span>';
+        }
+        $html .= '</div></td>';
+        $html .= '</tr>';
+    }
+    $html .= '</tbody></table></div>';
+    $html .= '</section>';
+
+    return $html;
+}
+
+function renderPoolLines(array $values): string
+{
+    $html = '<div class="records">';
+    foreach ($values as $value) {
+        $html .= '<div class="record-line mono">' . h((string)$value) . '</div>';
+    }
+    $html .= '</div>';
+    return $html;
+}
+
+function renderGeoRuleStatus(array $rule): string
+{
+    if ($rule['last_sync_error'] !== '') {
+        return '<div class="status-stack"><span class="pill pill-danger">Sync Error</span><span class="small muted">' . h($rule['last_sync_error']) . '</span></div>';
+    }
+
+    if (!$rule['is_enabled']) {
+        return '<div class="status-stack"><span class="pill pill-muted">Disabled</span><span class="small muted">Stored in DB, not published.</span></div>';
+    }
+
+    $suffix = $rule['last_synced_at'] !== null
+        ? '<span class="small muted">Last sync ' . h((string)$rule['last_synced_at']) . '</span>'
+        : '<span class="small muted">Waiting for first sync.</span>';
+    return '<div class="status-stack"><span class="pill pill-success">Active</span>' . $suffix . '</div>';
+}
+
+function buildGeoAddModal(string $zoneName, array $config): string
+{
+    $defaultCountries = implode(',', defaultGeoCountryCodes($config));
+    $defaultTtl = defaultGeoRuleTtl($config);
+
+    return '<div class="modal" id="geoAddModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>New GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoAddModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Name</label><input class="input" name="geo_name" value="@" placeholder="@ or www" required></div><div><label>Answer type</label><select class="input" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" name="geo_ttl" value="' . h((string)$defaultTtl) . '" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" name="geo_country_codes" value="' . h($defaultCountries) . '" placeholder="IR or IR,AF" required></div></div><label>Matched pool</label><textarea class="textarea mono" name="geo_country_answers" rows="5" placeholder="185.112.35.197" required></textarea><label>Default pool</label><textarea class="textarea mono" name="geo_default_answers" rows="5" placeholder="203.0.113.20" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" name="geo_health_check_port" min="1" max="65535" placeholder="443"></div><div><label>Behavior</label><div class="hint">If a health port is set, the chosen country pool falls back to the other pool when that TCP port is down.</div></div></div><label class="check-row"><input type="checkbox" name="geo_enabled" value="1" checked> Publish this rule immediately</label><div class="hint">A and AAAA GeoDNS rules at the same hostname share one PowerDNS LUA RRset, so keep their TTL identical.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoAddModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create GeoDNS rule</button></div></form></div></div>';
+}
+
+function buildGeoEditModal(string $zoneName): string
+{
+    return '<div class="modal" id="geoEditModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoEditModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><input type="hidden" name="geo_rule_id" id="geo_edit_rule_id"><div class="grid-two"><div><label>Name</label><input class="input" id="geo_edit_name" name="geo_name" required></div><div><label>Answer type</label><select class="input" id="geo_edit_record_type" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" id="geo_edit_ttl" name="geo_ttl" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" id="geo_edit_country_codes" name="geo_country_codes" required></div></div><label>Matched pool</label><textarea class="textarea mono" id="geo_edit_country_answers" name="geo_country_answers" rows="5" required></textarea><label>Default pool</label><textarea class="textarea mono" id="geo_edit_default_answers" name="geo_default_answers" rows="5" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" id="geo_edit_health_check_port" name="geo_health_check_port" min="1" max="65535"></div><div><label>Behavior</label><div class="hint">Changing the hostname or answer type re-syncs the new LUA RRset and also cleans up the old location when needed.</div></div></div><label class="check-row"><input type="checkbox" id="geo_edit_enabled" name="geo_enabled" value="1"> Publish this rule immediately</label><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoEditModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save GeoDNS rule</button></div></form></div></div>';
+}
+
+function manualRecordTypes(): array
+{
+    return ['A', 'AAAA', 'MX', 'CNAME', 'TXT', 'NS', 'PTR', 'SRV', 'CAA', 'SPF'];
 }
 
 function buildAddModal(string $zoneName): string
@@ -1881,7 +2878,7 @@ function zoneKindOptions(): string
 
 function recordTypeOptions(): string
 {
-    $types = ['A', 'AAAA', 'MX', 'CNAME', 'TXT', 'NS', 'PTR', 'SRV', 'CAA', 'SPF'];
+    $types = manualRecordTypes();
     $html = '';
     foreach ($types as $type) {
         $html .= '<option value="' . h($type) . '">' . h($type) . '</option>';
@@ -1982,7 +2979,7 @@ function appCss(): string
 .hero{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;align-items:center}
 .hero h2{margin:0 0 10px;font-size:28px}
 .hero p{margin:0;color:var(--muted);line-height:1.8}
-.hero-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.hero-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
 .stat-card{background:#0b1628;border:1px solid var(--line);border-radius:20px;padding:18px}
 .stat-card span{display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
 .stat-card strong{font-size:28px}
@@ -1990,17 +2987,26 @@ function appCss(): string
 .zone-title{font-size:28px;font-weight:900;word-break:break-all}
 .zone-subtitle{color:var(--muted);margin-top:6px}
 .zone-badges,.zone-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
+.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
+.section-title{margin:0 0 8px;font-size:24px}
+.section-copy{margin:0;color:var(--muted);line-height:1.7;max-width:880px}
+.rule-summary{display:flex;align-items:center;gap:10px}
 .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
 .toolbar-form{display:flex;gap:10px;align-items:center;flex:1;max-width:540px}
 .inline-form{display:inline}
 .table-wrap{overflow:auto;border:1px solid rgba(72,101,151,.22);border-radius:18px}
 table{width:100%;border-collapse:collapse;min-width:900px}
+table.geo-table{min-width:1180px}
 thead th{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#9fb3d8;background:#0a1426}
 th,td{padding:16px 14px;border-bottom:1px solid rgba(72,101,151,.18);vertical-align:top}
 tbody tr:hover{background:rgba(12,25,47,.65)}
 .records{display:grid;gap:6px}
 .record-line{padding:8px 10px;border:1px solid rgba(72,101,151,.18);border-radius:12px;background:#081426;white-space:pre-wrap;word-break:break-all}
 .action-stack{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.status-stack{display:grid;gap:6px}
+.pill-success{background:rgba(24,211,155,.12);border-color:rgba(24,211,155,.3);color:#c9fff0}
+.pill-danger{background:rgba(255,84,120,.12);border-color:rgba(255,84,120,.3);color:#ffd7df}
+.pill-muted{background:#0b1628;border-color:var(--line);color:#d5e6ff}
 .search-form{display:grid;gap:8px}
 .label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#b9cbe8}
 .modal{position:fixed;inset:0;background:rgba(2,7,15,.68);display:none;align-items:center;justify-content:center;padding:22px;z-index:60}
@@ -2043,6 +3049,20 @@ function fillEditModal(raw){
     document.getElementById('edit_ttl').value=data.ttl||300;
     document.getElementById('edit_content').value=data.content||'';
   }catch(e){console.error(e);alert('Failed to load RRset into editor.');}
+}
+function fillGeoEditModal(raw){
+  try{
+    const data=JSON.parse(raw);
+    document.getElementById('geo_edit_rule_id').value=data.id||'';
+    document.getElementById('geo_edit_name').value=data.name||'@';
+    document.getElementById('geo_edit_record_type').value=data.record_type||'A';
+    document.getElementById('geo_edit_ttl').value=data.ttl||60;
+    document.getElementById('geo_edit_country_codes').value=data.country_codes||'IR';
+    document.getElementById('geo_edit_country_answers').value=data.country_answers||'';
+    document.getElementById('geo_edit_default_answers').value=data.default_answers||'';
+    document.getElementById('geo_edit_health_check_port').value=data.health_check_port||'';
+    document.getElementById('geo_edit_enabled').checked=!!data.is_enabled;
+  }catch(e){console.error(e);alert('Failed to load GeoDNS rule into editor.');}
 }
 document.addEventListener('DOMContentLoaded',function(){
   const kind=document.getElementById('zone_kind');

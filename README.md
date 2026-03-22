@@ -8,6 +8,8 @@ The `install-hidata-geodns-manager.sh` script is intended for fresh or controlle
 
 - MariaDB
 - PowerDNS Authoritative with the `gmysql` backend
+- PowerDNS GeoIP support with `pdns-backend-geoip`
+- A local GeoIP database from the Ubuntu `geoip-database` package by default, or custom files via `PDNS_GEOIP_DATABASE_FILES`
 - A local-only PowerDNS HTTP API on `127.0.0.1:8081`
 - Nginx
 - PHP-FPM
@@ -22,6 +24,9 @@ The PHP panel runs on the same server as PowerDNS and talks to the local API ins
 - Local application login separate from the PowerDNS API key
 - Zone list, search, create, and delete
 - RRset list, filter, add, edit, and delete
+- GeoDNS rule management for `IR/default` or other country-code matches
+- Per-rule country pool, default pool, TTL, enable/disable state, and optional TCP failover port
+- Automatic sync of GeoDNS rules into PowerDNS LUA RRsets
 - Zone-file import from plain text or Cloudflare/BIND-style exports
 - Zone export
 - Zone rectify
@@ -78,7 +83,13 @@ Useful environment variables:
 - `PDNS_DB_USER`
 - `PDNS_DB_PASSWORD`
 - `PDNS_API_KEY`
+- `PDNS_GEOIP_DATABASE_FILES`
 - `PDNS_LOCAL_PORT`
+
+The installer is intentionally single-host:
+
+- `PDNS_DB_HOST` must remain `127.0.0.1`, `::1`, or `localhost`
+- `PDNS_API_BIND` must remain `127.0.0.1`, `::1`, or `localhost`
 
 ## Manual development setup
 
@@ -87,14 +98,15 @@ Only use this section when you are intentionally running the PHP panel by itself
 If you only want to run the PHP panel manually:
 
 1. Update `config.php`
-2. Generate a password hash:
+2. Make sure the configured MariaDB database exists and is reachable by the credentials in `config.php`
+3. Generate a password hash:
 
 ```bash
 php make-password-hash.php 'YourStrongPassword'
 ```
 
-3. Ensure `storage/` is writable
-4. Start a test server:
+4. Ensure `storage/` is writable
+5. Start a test server:
 
 ```bash
 php -S 127.0.0.1:8088 -t .
@@ -104,5 +116,8 @@ php -S 127.0.0.1:8088 -t .
 
 - The tracked `config.php` is now a safe placeholder template. The installer generates the real production config in the shared deployment directory.
 - `verify_tls = false` is only appropriate for the same-host default API URL (`http://127.0.0.1:8081/api/v1`).
+- GeoDNS rules are stored in MariaDB and published as PowerDNS `LUA` RRsets.
+- The default installer uses the Ubuntu `geoip-database` package for country lookups. If you need a different GeoIP source, point `PDNS_GEOIP_DATABASE_FILES` at your own `.dat` or `.mmdb` files.
+- GeoDNS answers are based on the resolver address unless the recursive resolver sends EDNS Client Subnet (ECS). Accuracy for end users is best with ECS-aware resolvers.
 - The panel manages RRsets, not individual record rows.
 - Editing replaces the whole RRset by design.
