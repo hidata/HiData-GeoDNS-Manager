@@ -110,6 +110,7 @@ APP_REQUIRE_HTTPS_RESOLVED=""
 APP_COOKIE_SECURE_RESOLVED=""
 APP_HSTS_RESOLVED=""
 PANEL_VERIFY_NOTE="Skipped panel readiness checks."
+PDNS_SERVICE_STOPPED_BY_INSTALLER=0
 
 C_RESET='\033[0m'
 C_RED='\033[31m'
@@ -297,6 +298,10 @@ cleanup() {
       warn "Attempting rollback to previous release: ${CURRENT_RELEASE}"
       ln -sfn "$CURRENT_RELEASE" "$WEB_ROOT/current" || true
       ln -sfn "$CURRENT_RELEASE" "$INSTALL_ROOT/current" || true
+    fi
+    if [[ "$PDNS_SERVICE_STOPPED_BY_INSTALLER" == "1" && "$DRY_RUN" != "1" ]]; then
+      warn "Attempting to restart ${PDNS_SERVICE} because the installer stopped it earlier."
+      systemctl start "$PDNS_SERVICE" || true
     fi
   fi
   if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]]; then
@@ -896,6 +901,18 @@ EOF
   fi
 }
 
+stop_pdns_service_if_running() {
+  if [[ "$PDNS_LOCAL_PORT" != "53" || "$DRY_RUN" == "1" ]]; then
+    return 0
+  fi
+  if ! systemctl is-active --quiet "$PDNS_SERVICE"; then
+    return 0
+  fi
+  log "Stopping ${PDNS_SERVICE} temporarily so port 53 can be validated..."
+  run systemctl stop "$PDNS_SERVICE"
+  PDNS_SERVICE_STOPPED_BY_INSTALLER=1
+}
+
 link_shared_items() {
   local release_dir="$1"
   run rm -f "$release_dir/config.php"
@@ -1372,6 +1389,7 @@ main() {
   generate_shared_config
   initialize_shared_storage
   configure_systemd_resolved_stub
+  stop_pdns_service_if_running
   assert_dns_port_available
   configure_database
   configure_pdns
