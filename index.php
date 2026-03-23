@@ -310,7 +310,7 @@ function renderFatalPage(string $title, string $message, array $details = []): n
 {
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
     echo '<title>' . h($title) . '</title>';
-    echo '<style>body{font-family:Inter,Arial,sans-serif;background:#0b1220;color:#e5eefb;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}.box{max-width:680px;background:#111a2e;border:1px solid #22314f;padding:32px;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)}h1{margin:0 0 12px;font-size:28px}p{margin:0;color:#a7badc;line-height:1.7}ul{margin:18px 0 0;padding-left:20px;color:#c8d8f6;line-height:1.7}</style></head><body><div class="box"><h1>' . h($title) . '</h1><p>' . h($message) . '</p>';
+    echo '<style>body{font-family:"Segoe UI Variable","Trebuchet MS","Segoe UI",sans-serif;background:radial-gradient(circle at top left,rgba(24,114,242,.12),transparent 28%),linear-gradient(180deg,#f8fbff 0%,#eef4f9 100%);color:#15324c;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;padding:24px}.box{max-width:680px;background:#fff;border:1px solid #d7e2ec;padding:32px;border-radius:28px;box-shadow:0 24px 60px rgba(18,50,76,.10)}h1{margin:0 0 12px;font-size:28px}p{margin:0;color:#60768b;line-height:1.8}ul{margin:18px 0 0;padding-left:20px;color:#15324c;line-height:1.8}</style></head><body><div class="box"><h1>' . h($title) . '</h1><p>' . h($message) . '</p>';
     if ($details !== []) {
         echo '<ul>';
         foreach ($details as $detail) {
@@ -552,17 +552,15 @@ function renderLoginPage(): never
     unset($_SESSION['flash']);
 
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-    echo '<title>HiData GeoDNS Manager</title>';
+    echo '<title>HiData</title>';
     echo '<style>' . baseCss() . loginCss() . '</style>';
     echo '</head><body class="login-body">';
     echo '<div class="login-shell">';
     echo '<div class="login-brand">';
-    echo '<div class="brand-mark">Hi</div>';
-    echo '<div><div class="brand-title">HiData GeoDNS Manager</div><div class="brand-subtitle">Secure PowerDNS control panel</div></div>';
+    echo '<div class="brand-mark">' . hidataLogoSvg('hidata-logo') . '</div>';
+    echo '<div class="brand-title">HiData</div>';
     echo '</div>';
     echo '<div class="login-card">';
-    echo '<h1>Sign in</h1>';
-    echo '<p class="muted">Use the application account configured in <code>config.php</code>.</p>';
     if ($flash) {
         echo renderFlash($flash);
     }
@@ -572,9 +570,15 @@ function renderLoginPage(): never
     echo '<form method="post" autocomplete="off">';
     echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
     echo '<input type="hidden" name="action" value="login">';
-    echo '<label>Username</label><input class="input" type="text" name="username" required autofocus>';
-    echo '<label>Password</label><input class="input" type="password" name="password" required>';
-    echo '<button class="btn btn-primary btn-block" type="submit">Sign in</button>';
+    echo '<div class="field-shell">';
+    echo '<span class="field-icon">' . uiIconSvg('user') . '</span>';
+    echo '<input class="input login-input" type="text" name="username" aria-label="Username" autocomplete="username" required autofocus>';
+    echo '</div>';
+    echo '<div class="field-shell">';
+    echo '<span class="field-icon">' . uiIconSvg('lock') . '</span>';
+    echo '<input class="input login-input" type="password" name="password" aria-label="Password" autocomplete="current-password" required>';
+    echo '</div>';
+    echo '<button class="btn btn-primary btn-block login-submit" type="submit" aria-label="Sign in">' . uiIconSvg('arrow-right', 'submit-icon') . '</button>';
     echo '</form>';
     echo '</div></div></body></html>';
     exit;
@@ -615,7 +619,7 @@ function handleMutation(array $config): never
             case 'create_zone':
                 guardZoneCreationAllowed($config);
                 $createdZone = createZoneFromPost($config);
-                $_SESSION['flash'] = ['type' => 'success', 'message' => 'Zone created successfully.'];
+                $_SESSION['flash'] = ['type' => 'success', 'message' => 'Domain created successfully.'];
                 redirect(zoneUrl((string)$createdZone['name']));
 
             case 'delete_zone':
@@ -627,7 +631,7 @@ function handleMutation(array $config): never
                 pdnsRequest($config, 'DELETE', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']));
                 deleteGeoRulesForZone($config, (string)$zone['name']);
                 audit($config, 'delete_zone', ['zone' => $zone['name']]);
-                $_SESSION['flash'] = ['type' => 'success', 'message' => 'Zone deleted successfully.'];
+                $_SESSION['flash'] = ['type' => 'success', 'message' => 'Domain deleted successfully.'];
                 redirect('index.php');
 
             case 'add_rrset':
@@ -747,7 +751,7 @@ function handleMutation(array $config): never
                 guardRectifyAllowed($zone);
                 pdnsRequest($config, 'PUT', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']) . '/rectify');
                 audit($config, 'rectify_zone', ['zone' => $zone['name']]);
-                $_SESSION['flash'] = ['type' => 'success', 'message' => 'Zone rectified successfully.'];
+                $_SESSION['flash'] = ['type' => 'success', 'message' => 'Domain rectified successfully.'];
                 break;
 
             default:
@@ -763,14 +767,14 @@ function handleMutation(array $config): never
 function guardZoneCreationAllowed(array $config): void
 {
     if (($config['features']['allow_zone_create'] ?? true) !== true) {
-        throw new RuntimeException('Zone creation is disabled in this panel.');
+        throw new RuntimeException('Domain creation is disabled in this panel.');
     }
 }
 
 function guardZoneDeletionAllowed(array $config): void
 {
     if (($config['features']['allow_zone_delete'] ?? true) !== true) {
-        throw new RuntimeException('Zone deletion is disabled in this panel.');
+        throw new RuntimeException('Domain deletion is disabled in this panel.');
     }
 }
 
@@ -1689,7 +1693,7 @@ function syncGeoZoneFromPost(array $config, array $zone): array
     if ($ruleGroups === []) {
         return [
             'synced_sets' => 0,
-            'message' => 'No GeoDNS rules exist for this zone yet.',
+            'message' => 'No GeoDNS rules exist for this domain yet.',
         ];
     }
 
@@ -1717,7 +1721,7 @@ function syncGeoZoneFromPost(array $config, array $zone): array
 
     return [
         'synced_sets' => $syncedSets,
-        'message' => sprintf('Synced %d GeoDNS rule set(s) for this zone.', $syncedSets),
+        'message' => sprintf('Synced %d GeoDNS rule set(s) for this domain.', $syncedSets),
     ];
 }
 
@@ -1730,7 +1734,7 @@ function buildGeoRulePayloadFromPost(array $config, array $zone, ?array $existin
     }
     $fqdn = fqdnFromInput($name, $zoneName);
     if (!isNameInsideZone($fqdn, $zoneName)) {
-        throw new RuntimeException('GeoDNS rules may only target records inside the selected zone.');
+        throw new RuntimeException('GeoDNS rules may only target records inside the selected domain.');
     }
 
     $recordType = strtoupper(trim((string)($_POST['geo_record_type'] ?? 'A')));
@@ -2432,6 +2436,27 @@ function h(?string $value): string
     return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+function hidataLogoSvg(string $class = 'hidata-logo'): string
+{
+    return '<svg class="' . h($class) . '" viewBox="0 0 67 76" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+        . '<path fill="currentColor" d="M0.0194428 19.154C11.063 12.8344 22.0546 6.44969 32.9944 0C43.8824 6.59273 54.9648 12.8344 65.9306 19.3101C65.9695 22.5479 65.9695 25.7858 65.9306 29.0236C62.1587 31.4032 58.309 33.5878 54.4982 35.8894C52.4373 36.9427 50.6485 38.4251 48.5098 39.3223C47.9162 39.1869 47.3505 38.9493 46.8377 38.6201C41.8215 35.5773 36.7664 32.6125 31.7501 29.6478C37.3885 26.2149 43.0658 22.847 48.782 19.5441C43.9991 16.7744 39.255 13.9657 34.5499 11.1179C23.1175 17.8667 11.5685 24.4594 0.0972141 31.1692C-0.0583284 27.1511 0.0194428 23.1331 0.0194428 19.154Z"></path>'
+        . '<path fill="currentColor" d="M0.387815 46.695C6.2401 43.3011 12.0535 39.7902 17.828 36.2793C23.4276 39.4781 28.9882 42.833 34.5488 46.1879C28.9104 49.5428 23.1942 52.8977 17.5558 56.2525C22.3388 58.9832 27.0828 61.831 31.8268 64.6787C43.2592 57.93 54.7694 51.2982 66.2406 44.6665V56.6426C60.2911 60.0365 54.3805 63.5084 48.4699 66.9413C43.4148 69.7891 38.4763 72.8709 33.3434 75.6406C22.2221 69.438 11.373 62.8062 0.329487 56.5256C0.407258 53.2487 0.368372 49.9719 0.368372 46.695H0.387815Z"></path>'
+        . '<path fill="currentColor" d="M0.391268 46.695C6.24355 43.3011 12.057 39.7902 17.8315 36.2793C23.431 39.4781 28.9916 42.833 34.5523 46.1879C28.9139 49.5428 23.1977 52.8977 17.5593 56.2525C22.3422 58.9832 27.0863 61.831 31.8303 64.6787C43.2627 57.93 54.7728 51.2982 66.2441 44.6665V56.6426C60.2946 60.0365 54.384 63.5084 48.4733 66.9413C43.4182 69.7891 38.4797 72.8709 33.3468 75.6406C22.2255 69.438 11.3765 62.8062 0.332939 56.5256C0.41071 53.2487 0.371825 49.9719 0.371825 46.695H0.391268Z"></path>'
+        . '</svg>';
+}
+
+function uiIconSvg(string $icon, string $class = 'ui-icon'): string
+{
+    $paths = match ($icon) {
+        'user' => '<path d="M12 12a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm0 2c-3.59 0-6.5 1.79-6.5 4v1h13v-1c0-2.21-2.91-4-6.5-4Z" fill="currentColor"></path>',
+        'lock' => '<path d="M8 10V8a4 4 0 1 1 8 0v2h1.25A1.75 1.75 0 0 1 19 11.75v5.5A1.75 1.75 0 0 1 17.25 19h-10.5A1.75 1.75 0 0 1 5 17.25v-5.5A1.75 1.75 0 0 1 6.75 10H8Zm2 0h4V8a2 2 0 1 0-4 0v2Z" fill="currentColor"></path>',
+        'arrow-right' => '<path d="M5 12h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><path d="m11 7 5 5-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>',
+        default => '',
+    };
+
+    return '<svg class="' . h($class) . '" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' . $paths . '</svg>';
+}
+
 function renderFlash(?array $flash): string
 {
     if (!$flash) {
@@ -2502,6 +2527,7 @@ function renderPage(array $data): void
     $geoRuleStats = $data['geoRuleStats'];
     $rrsets = $data['rrsets'];
     $recordFilter = $data['recordFilter'];
+    $currentZoneDisplayName = $currentZone ? rtrim((string)$currentZone['name'], '.') : '';
 
     $filteredZones = array_values(array_filter($zones, static function ($zone) use ($zoneSearch) {
         if ($zoneSearch === '') {
@@ -2509,6 +2535,19 @@ function renderPage(array $data): void
         }
         return mb_stripos((string)($zone['name'] ?? ''), $zoneSearch) !== false;
     }));
+
+    $zoneCount = count($zones);
+    $rrsetCount = count($rrsets);
+    $recordCount = 0;
+    foreach ($rrsets as $rrset) {
+        $recordCount += count($rrset['records'] ?? []);
+    }
+    $nameserverCount = 0;
+    foreach (($zoneDetails['nameservers'] ?? []) as $nameserver) {
+        if (trim((string)$nameserver) !== '') {
+            $nameserverCount++;
+        }
+    }
 
     $canCreateZones = canCreateZones($config);
     $canDeleteCurrentZone = canDeleteZones($config) && canModifyZone($config, $zoneDetails);
@@ -2522,30 +2561,30 @@ function renderPage(array $data): void
     echo '<div class="layout">';
     echo '<aside class="sidebar">';
     echo '<div class="brand">';
-    echo '<div class="brand-logo">Hi</div>';
-    echo '<div><div class="brand-name">' . h((string)($config['app']['name'] ?? 'HiData GeoDNS Manager')) . '</div>';
-    echo '<div class="brand-tag">GeoDNS rule and zone manager</div></div>';
+    echo '<div class="brand-logo">' . hidataLogoSvg('hidata-logo') . '</div>';
+    echo '<div><div class="brand-name">HiData</div>';
+    echo '<div class="brand-tag">Domain and GeoDNS manager</div></div>';
     echo '</div>';
 
     echo '<form class="search-form" method="get">';
     if ($currentZone) {
         echo '<input type="hidden" name="zone" value="' . h(rtrim((string)$currentZone['name'], '.')) . '">';
     }
-    echo '<label class="label">Zone search</label>';
-    echo '<input class="input" type="text" name="zone_search" value="' . h($zoneSearch) . '" placeholder="Search zones...">';
+    echo '<label class="label">Domain search</label>';
+    echo '<input class="input" type="text" name="zone_search" value="' . h($zoneSearch) . '" placeholder="Search domains...">';
     echo '</form>';
 
-    echo '<div class="sidebar-section-title">Zones <span class="badge">' . count($filteredZones) . '</span></div>';
+    echo '<div class="sidebar-section-title">Domains <span class="badge">' . count($filteredZones) . '</span></div>';
     echo '<div class="zone-list">';
     foreach ($filteredZones as $zone) {
         $active = $currentZone && $currentZone['name'] === $zone['name'] ? ' active' : '';
         echo '<a class="zone-item' . $active . '" href="?zone=' . urlencode(rtrim((string)$zone['name'], '.')) . '">';
         echo '<span class="zone-name">' . h(rtrim((string)$zone['name'], '.')) . '</span>';
-        echo '<span class="zone-meta">' . h((string)($zone['kind'] ?? 'Unknown')) . '</span>';
+        echo '<span class="zone-meta">Project ' . h((string)($zone['kind'] ?? 'Unknown')) . '</span>';
         echo '</a>';
     }
     if ($filteredZones === []) {
-        echo '<div class="empty small">No zones found.</div>';
+        echo '<div class="empty small">No domains found.</div>';
     }
     echo '</div>';
 
@@ -2561,12 +2600,12 @@ function renderPage(array $data): void
     echo '<main class="content">';
     echo '<div class="topbar">';
     echo '<div>';
-    echo '<div class="eyebrow">HiData GeoDNS</div>';
-    echo '<h1 class="page-title">' . ($currentZone ? h(rtrim((string)$currentZone['name'], '.')) : 'PowerDNS Dashboard') . '</h1>';
+    echo '<div class="eyebrow">HiData DNS Workspace</div>';
+    echo '<h1 class="page-title">' . ($currentZone ? h($currentZoneDisplayName) : 'Domain Projects') . '</h1>';
     echo '</div>';
     echo '<div class="top-actions">';
     if ($canCreateZones) {
-        echo '<a class="btn btn-primary" href="#" onclick="openModal(\'zoneCreateModal\');return false;">New zone</a>';
+        echo '<a class="btn btn-primary" href="#" onclick="openModal(\'zoneCreateModal\');return false;">New domain</a>';
     }
     echo '<span class="user-chip">' . h((string)($_SESSION['auth']['username'] ?? 'admin')) . '</span>';
     echo '<form method="post" class="inline-form">';
@@ -2582,14 +2621,14 @@ function renderPage(array $data): void
     if (!$currentZone || !$zoneDetails) {
         echo '<section class="panel hero">';
         echo '<div class="hero-copy">';
-        echo '<h2>Manage authoritative DNS and IR/default GeoDNS on the same host as PowerDNS</h2>';
-        echo '<p>Create zones, manage regular RRsets, and publish country-aware GeoDNS rules that send Iran to one server and the default world path to another.</p>';
+        echo '<h2>Create the main domain first, then manage records inside that domain project.</h2>';
+        echo '<p>Start with a domain like <code>hidata.org</code>. After that, open the project to add root records, subdomains, imports, and GeoDNS rules in a flow similar to Cloudflare or WHM.</p>';
         echo '</div>';
         echo '<div class="hero-grid">';
-        echo '<div class="stat-card"><span>Zones</span><strong>' . count($zones) . '</strong></div>';
-        echo '<div class="stat-card"><span>Geo Rules</span><strong>' . (int)($geoRuleStats['total_rules'] ?? 0) . '</strong></div>';
-        echo '<div class="stat-card"><span>Geo Active</span><strong>' . (int)($geoRuleStats['enabled_rules'] ?? 0) . '</strong></div>';
-        echo '<div class="stat-card"><span>Backups</span><strong>' . (($config['features']['backup_before_write'] ?? false) ? 'Enabled' : 'Disabled') . '</strong></div>';
+        echo '<div class="stat-card"><span>Domains</span><strong>' . $zoneCount . '</strong><small>Main domain projects</small></div>';
+        echo '<div class="stat-card"><span>Geo Rules</span><strong>' . (int)($geoRuleStats['total_rules'] ?? 0) . '</strong><small>Stored across all domains</small></div>';
+        echo '<div class="stat-card"><span>Geo Active</span><strong>' . (int)($geoRuleStats['enabled_rules'] ?? 0) . '</strong><small>Published to PowerDNS</small></div>';
+        echo '<div class="stat-card"><span>Mode</span><strong>' . (($config['features']['read_only'] ?? false) ? 'Read only' : 'Live write') . '</strong><small>Backups ' . (($config['features']['backup_before_write'] ?? false) ? 'enabled' : 'disabled') . '</small></div>';
         echo '</div>';
         echo '</section>';
         if ($canCreateZones) {
@@ -2603,11 +2642,11 @@ function renderPage(array $data): void
 
     echo '<section class="panel zone-header">';
     echo '<div class="zone-title-wrap">';
-    echo '<div class="zone-title">' . h(rtrim((string)$zoneDetails['name'], '.')) . '</div>';
-    echo '<div class="zone-subtitle">Serial ' . h((string)($zoneDetails['serial'] ?? '-')) . ' | Edited serial ' . h((string)($zoneDetails['edited_serial'] ?? '-')) . '</div>';
+    echo '<div class="zone-title">' . h($currentZoneDisplayName) . '</div>';
+    echo '<div class="zone-subtitle">Main domain project | Serial ' . h((string)($zoneDetails['serial'] ?? '-')) . ' | Edited serial ' . h((string)($zoneDetails['edited_serial'] ?? '-')) . '</div>';
     echo '</div>';
     echo '<div class="zone-badges">';
-    echo '<span class="pill">' . h((string)($zoneDetails['kind'] ?? 'Unknown')) . '</span>';
+    echo '<span class="pill">Type ' . h((string)($zoneDetails['kind'] ?? 'Unknown')) . '</span>';
     echo '<span class="pill">DNSSEC ' . (!empty($zoneDetails['dnssec']) ? 'On' : 'Off') . '</span>';
     echo '<span class="pill">API Rectify ' . (!empty($zoneDetails['api_rectify']) ? 'On' : 'Off') . '</span>';
     echo '</div>';
@@ -2623,9 +2662,9 @@ function renderPage(array $data): void
         echo '<a class="btn btn-ghost" href="#" onclick="openModal(\'addModal\');return false;">Add record</a>';
         echo '<a class="btn btn-ghost" href="#" onclick="openModal(\'importModal\');return false;">Import TXT</a>';
     }
-    echo '<a class="btn btn-ghost" href="?download=zone&amp;zone=' . urlencode(rtrim((string)$zoneDetails['name'], '.')) . '">Export zone</a>';
+    echo '<a class="btn btn-ghost" href="?download=zone&amp;zone=' . urlencode(rtrim((string)$zoneDetails['name'], '.')) . '">Export domain</a>';
     if ($canRectifyCurrentZone) {
-        echo '<form method="post" class="inline-form" onsubmit="return confirm(\'Rectify this zone now?\')">';
+        echo '<form method="post" class="inline-form" onsubmit="return confirm(\'Rectify this domain now?\')">';
         echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
         echo '<input type="hidden" name="action" value="rectify_zone">';
         echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
@@ -2633,30 +2672,52 @@ function renderPage(array $data): void
         echo '</form>';
     }
     if ($canDeleteCurrentZone) {
-        echo '<form method="post" class="inline-form" onsubmit="return confirm(\'Delete this zone and all its records?\')">';
+        echo '<form method="post" class="inline-form" onsubmit="return confirm(\'Delete this domain and all its records?\')">';
         echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
         echo '<input type="hidden" name="action" value="delete_zone">';
         echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
-        echo '<button class="btn btn-danger" type="submit">Delete zone</button>';
+        echo '<button class="btn btn-danger" type="submit">Delete domain</button>';
         echo '</form>';
     }
     echo '</div>';
     echo '</section>';
 
+    echo '<section class="domain-stats">';
+    echo '<article class="stat-card stat-card-accent">';
+    echo '<span>Root</span><strong>' . h($currentZoneDisplayName) . '</strong><small>Use <code>@</code> for the root host in this domain.</small>';
+    echo '</article>';
+    echo '<article class="stat-card">';
+    echo '<span>RRsets</span><strong>' . $rrsetCount . '</strong><small>' . $recordCount . ' record values in view</small>';
+    echo '</article>';
+    echo '<article class="stat-card">';
+    echo '<span>GeoDNS</span><strong>' . count($geoRules) . '</strong><small>Country-based answers in this domain</small>';
+    echo '</article>';
+    echo '<article class="stat-card">';
+    echo '<span>Nameservers</span><strong>' . $nameserverCount . '</strong><small>Authority hosts attached to the domain</small>';
+    echo '</article>';
+    echo '</section>';
+
     echo renderGeoRulesSection($config, $zoneDetails, $geoRules, $canModifyCurrentZone);
 
     echo '<section class="panel">';
+    echo '<div class="section-head">';
+    echo '<div>';
+    echo '<h2 class="section-title">Records</h2>';
+    echo '<p class="section-copy">Define records inside <code>' . h($currentZoneDisplayName) . '</code>. Use <code>@</code> for the root domain or a hostname like <code>www</code>, <code>api</code>, or <code>mail</code> for child records.</p>';
+    echo '</div>';
+    echo '<div class="rule-summary"><span class="pill">Values ' . $recordCount . '</span></div>';
+    echo '</div>';
     echo '<div class="toolbar">';
     echo '<form method="get" class="toolbar-form">';
     echo '<input type="hidden" name="zone" value="' . h(rtrim((string)$zoneDetails['name'], '.')) . '">';
-    echo '<input class="input" type="text" name="record_filter" value="' . h($recordFilter) . '" placeholder="Search records...">';
+    echo '<input class="input" type="text" name="record_filter" value="' . h($recordFilter) . '" placeholder="Search hosts, types, or values...">';
     echo '<button class="btn btn-ghost" type="submit">Filter</button>';
     echo '</form>';
-    echo '<div class="small muted">Showing ' . count($rrsets) . ' RRsets</div>';
+    echo '<div class="small muted">Showing ' . $rrsetCount . ' RRsets</div>';
     echo '</div>';
 
     if ($rrsets === []) {
-        echo '<div class="empty">No RRsets matched this zone or filter.</div>';
+        echo '<div class="empty">No records matched this domain or filter.</div>';
     } else {
         echo '<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>TTL</th><th>Records</th><th>Actions</th></tr></thead><tbody>';
         foreach ($rrsets as $rrset) {
@@ -2704,7 +2765,7 @@ function renderPage(array $data): void
                 echo '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
                 echo '</form>';
             } else {
-                echo '<span class="small muted">Writes disabled for this zone.</span>';
+                echo '<span class="small muted">Writes disabled for this domain.</span>';
             }
             echo '</div></td>';
             echo '</tr>';
@@ -2735,13 +2796,13 @@ function renderGeoRulesSection(array $config, array $zoneDetails, array $geoRule
     $html .= '<div class="section-head">';
     $html .= '<div>';
     $html .= '<h2 class="section-title">GeoDNS Rules</h2>';
-    $html .= '<p class="section-copy">Geo decisions use the resolver IP or EDNS Client Subnet when available. For a classic IR/default setup, keep one Iran pool and one default pool here.</p>';
+    $html .= '<p class="section-copy">Geo decisions live inside this domain project. Use them when <code>@</code>, <code>www</code>, or any other host should answer differently for Iran versus the default world route.</p>';
     $html .= '</div>';
     $html .= '<div class="rule-summary"><span class="pill">Rules ' . count($geoRules) . '</span></div>';
     $html .= '</div>';
 
     if ($geoRules === []) {
-        $html .= '<div class="empty">No GeoDNS rules exist for this zone yet. Add one for <code>@</code> or <code>www</code> to send <code>IR</code> to the Iran server and the default path to Europe.</div>';
+        $html .= '<div class="empty">No GeoDNS rules exist for this domain yet. Add one for <code>@</code> or <code>www</code> to send <code>IR</code> to the Iran server and the default path to Europe.</div>';
         $html .= '</section>';
         return $html;
     }
@@ -2791,7 +2852,7 @@ function renderGeoRulesSection(array $config, array $zoneDetails, array $geoRule
             $html .= '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
             $html .= '</form>';
         } else {
-            $html .= '<span class="small muted">Writes disabled for this zone.</span>';
+            $html .= '<span class="small muted">Writes disabled for this domain.</span>';
         }
         $html .= '</div></td>';
         $html .= '</tr>';
@@ -2828,17 +2889,23 @@ function renderGeoRuleStatus(array $rule): string
     return '<div class="status-stack"><span class="pill pill-success">Active</span>' . $suffix . '</div>';
 }
 
+function modalScopeBanner(string $zoneName): string
+{
+    $displayName = rtrim(ensureTrailingDot($zoneName), '.');
+    return '<div class="modal-scope"><span>Domain project</span><strong>' . h($displayName) . '</strong><small>Use <code>@</code> for the root host.</small></div>';
+}
+
 function buildGeoAddModal(string $zoneName, array $config): string
 {
     $defaultCountries = implode(',', defaultGeoCountryCodes($config));
     $defaultTtl = defaultGeoRuleTtl($config);
 
-    return '<div class="modal" id="geoAddModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>New GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoAddModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Name</label><input class="input" name="geo_name" value="@" placeholder="@ or www" required></div><div><label>Answer type</label><select class="input" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" name="geo_ttl" value="' . h((string)$defaultTtl) . '" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" name="geo_country_codes" value="' . h($defaultCountries) . '" placeholder="IR or IR,AF" required></div></div><label>Matched pool</label><textarea class="textarea mono" name="geo_country_answers" rows="5" placeholder="185.112.35.197" required></textarea><label>Default pool</label><textarea class="textarea mono" name="geo_default_answers" rows="5" placeholder="203.0.113.20" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" name="geo_health_check_port" min="1" max="65535" placeholder="443"></div><div><label>Behavior</label><div class="hint">If a health port is set, the chosen country pool falls back to the other pool when that TCP port is down.</div></div></div><label class="check-row"><input type="checkbox" name="geo_enabled" value="1" checked> Publish this rule immediately</label><div class="hint">A and AAAA GeoDNS rules at the same hostname share one PowerDNS LUA RRset, so keep their TTL identical.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoAddModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create GeoDNS rule</button></div></form></div></div>';
+    return '<div class="modal" id="geoAddModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>New GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoAddModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" name="geo_name" value="@" placeholder="@ or www" required></div><div><label>Answer type</label><select class="input" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" name="geo_ttl" value="' . h((string)$defaultTtl) . '" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" name="geo_country_codes" value="' . h($defaultCountries) . '" placeholder="IR or IR,AF" required></div></div><label>Matched pool</label><textarea class="textarea mono" name="geo_country_answers" rows="5" placeholder="185.112.35.197" required></textarea><label>Default pool</label><textarea class="textarea mono" name="geo_default_answers" rows="5" placeholder="203.0.113.20" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" name="geo_health_check_port" min="1" max="65535" placeholder="443"></div><div><label>Behavior</label><div class="hint">If a health port is set, the chosen country pool falls back to the other pool when that TCP port is down.</div></div></div><label class="check-row"><input type="checkbox" name="geo_enabled" value="1" checked> Publish this rule immediately</label><div class="hint">A and AAAA GeoDNS rules at the same hostname share one PowerDNS LUA RRset, so keep their TTL identical.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoAddModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create GeoDNS rule</button></div></form></div></div>';
 }
 
 function buildGeoEditModal(string $zoneName): string
 {
-    return '<div class="modal" id="geoEditModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoEditModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><input type="hidden" name="geo_rule_id" id="geo_edit_rule_id"><div class="grid-two"><div><label>Name</label><input class="input" id="geo_edit_name" name="geo_name" required></div><div><label>Answer type</label><select class="input" id="geo_edit_record_type" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" id="geo_edit_ttl" name="geo_ttl" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" id="geo_edit_country_codes" name="geo_country_codes" required></div></div><label>Matched pool</label><textarea class="textarea mono" id="geo_edit_country_answers" name="geo_country_answers" rows="5" required></textarea><label>Default pool</label><textarea class="textarea mono" id="geo_edit_default_answers" name="geo_default_answers" rows="5" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" id="geo_edit_health_check_port" name="geo_health_check_port" min="1" max="65535"></div><div><label>Behavior</label><div class="hint">Changing the hostname or answer type re-syncs the new LUA RRset and also cleans up the old location when needed.</div></div></div><label class="check-row"><input type="checkbox" id="geo_edit_enabled" name="geo_enabled" value="1"> Publish this rule immediately</label><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoEditModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save GeoDNS rule</button></div></form></div></div>';
+    return '<div class="modal" id="geoEditModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoEditModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><input type="hidden" name="geo_rule_id" id="geo_edit_rule_id"><div class="grid-two"><div><label>Host</label><input class="input" id="geo_edit_name" name="geo_name" required></div><div><label>Answer type</label><select class="input" id="geo_edit_record_type" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" id="geo_edit_ttl" name="geo_ttl" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" id="geo_edit_country_codes" name="geo_country_codes" required></div></div><label>Matched pool</label><textarea class="textarea mono" id="geo_edit_country_answers" name="geo_country_answers" rows="5" required></textarea><label>Default pool</label><textarea class="textarea mono" id="geo_edit_default_answers" name="geo_default_answers" rows="5" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" id="geo_edit_health_check_port" name="geo_health_check_port" min="1" max="65535"></div><div><label>Behavior</label><div class="hint">Changing the hostname or answer type re-syncs the new LUA RRset and also cleans up the old location when needed.</div></div></div><label class="check-row"><input type="checkbox" id="geo_edit_enabled" name="geo_enabled" value="1"> Publish this rule immediately</label><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoEditModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save GeoDNS rule</button></div></form></div></div>';
 }
 
 function manualRecordTypes(): array
@@ -2848,22 +2915,22 @@ function manualRecordTypes(): array
 
 function buildAddModal(string $zoneName): string
 {
-    return '<div class="modal" id="addModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Add RRset</h3><button class="icon-btn" type="button" onclick="closeModal(\'addModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="add_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Name</label><input class="input" name="name" value="@" placeholder="@ or subdomain" required></div><div><label>Type</label><select class="input" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" name="ttl" value="300" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Use one value per line for multi-value RRsets.</div></div></div><label>Content</label><textarea class="textarea" name="content" rows="8" placeholder="185.112.35.197 or 10 mail.example.com." required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'addModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create RRset</button></div></form></div></div>';
+    return '<div class="modal" id="addModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Add record</h3><button class="icon-btn" type="button" onclick="closeModal(\'addModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="add_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" name="name" value="@" placeholder="@ or subdomain" required></div><div><label>Type</label><select class="input" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" name="ttl" value="300" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Use one value per line for multi-value RRsets.</div></div></div><label>Content</label><textarea class="textarea" name="content" rows="8" placeholder="185.112.35.197 or 10 mail.example.com." required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'addModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create record</button></div></form></div></div>';
 }
 
 function buildEditModal(string $zoneName): string
 {
-    return '<div class="modal" id="editModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit RRset</h3><button class="icon-btn" type="button" onclick="closeModal(\'editModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Name</label><input class="input" id="edit_name" name="name" required></div><div><label>Type</label><select class="input" id="edit_type" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" id="edit_ttl" name="ttl" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Editing replaces the whole RRset for this name and type.</div></div></div><label>Content</label><textarea class="textarea" id="edit_content" name="content" rows="8" required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'editModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div></form></div></div>';
+    return '<div class="modal" id="editModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit record</h3><button class="icon-btn" type="button" onclick="closeModal(\'editModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" id="edit_name" name="name" required></div><div><label>Type</label><select class="input" id="edit_type" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" id="edit_ttl" name="ttl" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Editing replaces the whole RRset for this host and type.</div></div></div><label>Content</label><textarea class="textarea" id="edit_content" name="content" rows="8" required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'editModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div></form></div></div>';
 }
 
 function buildImportModal(string $zoneName): string
 {
-    return '<div class="modal" id="importModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Import zone text</h3><button class="icon-btn" type="button" onclick="closeModal(\'importModal\')">&times;</button></div><form method="post" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="import_zone_file"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><label>Zone file</label><input class="input" type="file" name="zone_file" accept=".txt,.zone,text/plain"><div class="hint">Upload a Cloudflare/BIND-style text export, or paste the same content below.</div><label>Or paste zone text</label><textarea class="textarea" name="zone_text" rows="12" placeholder="hidata.org. 3600 IN A 192.0.2.10"></textarea><div class="grid-two"><div><label>Import options</label><div class="hint"><label class="check-row"><input type="checkbox" name="import_ns" value="1"> Import NS records too</label><label class="check-row"><input type="checkbox" name="import_soa" value="1"> Import SOA record too</label></div></div><div><label>Notes</label><div class="hint">Imported RRsets are upserted with REPLACE, so records in this file overwrite the same name/type in the selected zone. Records not present in the file are kept. SOA and NS are skipped by default because Cloudflare exports often contain authority values that should be changed before production use.</div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'importModal\')">Cancel</button><button class="btn btn-primary" type="submit">Import records</button></div></form></div></div>';
+    return '<div class="modal" id="importModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Import domain records</h3><button class="icon-btn" type="button" onclick="closeModal(\'importModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="import_zone_file"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><label>Zone file</label><input class="input" type="file" name="zone_file" accept=".txt,.zone,text/plain"><div class="hint">Upload a Cloudflare/BIND-style text export, or paste the same content below.</div><label>Or paste zone text</label><textarea class="textarea" name="zone_text" rows="12" placeholder="hidata.org. 3600 IN A 192.0.2.10"></textarea><div class="grid-two"><div><label>Import options</label><div class="hint"><label class="check-row"><input type="checkbox" name="import_ns" value="1"> Import NS records too</label><label class="check-row"><input type="checkbox" name="import_soa" value="1"> Import SOA record too</label></div></div><div><label>Notes</label><div class="hint">Imported RRsets are upserted with REPLACE, so records in this file overwrite the same name/type in the selected domain. Records not present in the file are kept. SOA and NS are skipped by default because Cloudflare exports often contain authority values that should be changed before production use.</div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'importModal\')">Cancel</button><button class="btn btn-primary" type="submit">Import records</button></div></form></div></div>';
 }
 
 function buildCreateZoneModal(): string
 {
-    return '<div class="modal" id="zoneCreateModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Create zone</h3><button class="icon-btn" type="button" onclick="closeModal(\'zoneCreateModal\')">&times;</button></div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_zone"><div class="grid-two"><div><label>Zone name</label><input class="input" name="zone_name" placeholder="example.com" required></div><div><label>Zone kind</label><select class="input" id="zone_kind" name="zone_kind" onchange="toggleZoneKindFields(this.value)">' . zoneKindOptions() . '</select></div><div id="zone_nameservers_field"><label>Nameservers</label><textarea class="textarea" name="nameservers" rows="5" placeholder="ns1.example.com.&#10;ns2.example.com." required></textarea></div><div id="zone_masters_field" style="display:none"><label>Masters</label><textarea class="textarea" name="masters" rows="5" placeholder="192.0.2.10&#10;192.0.2.11"></textarea></div><div><label>Account</label><input class="input" name="account" placeholder="Optional owner/account label"></div><div><label>Zone options</label><div class="hint"><label class="check-row"><input type="checkbox" name="dnssec" checked> Enable DNSSEC support</label><label class="check-row"><input type="checkbox" name="api_rectify" checked> Enable API rectify</label></div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'zoneCreateModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create zone</button></div></form></div></div>';
+    return '<div class="modal" id="zoneCreateModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Create domain project</h3><button class="icon-btn" type="button" onclick="closeModal(\'zoneCreateModal\')">&times;</button></div><div class="modal-intro">Start by defining the main domain, for example <code>hidata.org</code>. After this project is created, all records, imports, exports, and GeoDNS rules are managed inside the same domain.</div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_zone"><div class="grid-two"><div><label>Main domain</label><input class="input" name="zone_name" placeholder="hidata.org" required></div><div><label>Project type</label><select class="input" id="zone_kind" name="zone_kind" onchange="toggleZoneKindFields(this.value)">' . zoneKindOptions() . '</select></div><div id="zone_nameservers_field"><label>Nameservers</label><textarea class="textarea" name="nameservers" rows="5" placeholder="ns1.hidata.org.&#10;ns2.hidata.org." required></textarea></div><div id="zone_masters_field" style="display:none"><label>Masters</label><textarea class="textarea" name="masters" rows="5" placeholder="192.0.2.10&#10;192.0.2.11"></textarea></div><div><label>Account</label><input class="input" name="account" placeholder="Optional owner/account label"></div><div><label>Project options</label><div class="hint"><label class="check-row"><input type="checkbox" name="dnssec" checked> Enable DNSSEC support</label><label class="check-row"><input type="checkbox" name="api_rectify" checked> Enable API rectify</label></div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'zoneCreateModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create domain</button></div></form></div></div>';
 }
 
 function zoneKindOptions(): string
@@ -2890,45 +2957,51 @@ function baseCss(): string
 {
     return <<<'CSS'
 :root{
-  --bg:#08111f;
-  --bg-soft:#0e1a2f;
-  --panel:#0f1c33;
-  --panel-2:#122341;
-  --line:#223658;
-  --text:#ebf3ff;
-  --muted:#9fb3d8;
-  --primary:#15b8ff;
-  --primary-2:#4de4ff;
-  --danger:#ff5478;
-  --success:#18d39b;
-  --warning:#ffb547;
-  --shadow:0 18px 55px rgba(0,0,0,.35);
+  --bg:#eef4f9;
+  --bg-soft:#f8fbff;
+  --panel:#ffffff;
+  --panel-2:#f4f9ff;
+  --line:#d7e2ec;
+  --line-strong:#c2d4e4;
+  --text:#15324c;
+  --muted:#60768b;
+  --primary:#1872f2;
+  --primary-2:#19b6ff;
+  --primary-soft:#e7f2ff;
+  --danger:#d45369;
+  --success:#1f9d6e;
+  --warning:#c48a1c;
+  --shadow:0 24px 60px rgba(18,50,76,.10);
+  --shadow-soft:0 12px 28px rgba(18,50,76,.07);
 }
 *{box-sizing:border-box}
-html,body{margin:0;padding:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;background:radial-gradient(circle at top right,#16325d 0,#08111f 42%,#06101c 100%);color:var(--text)}
+html,body{margin:0;padding:0;min-height:100%;font-family:"Segoe UI Variable","Trebuchet MS","Segoe UI",sans-serif;background:radial-gradient(circle at top left,rgba(24,114,242,.12),transparent 28%),radial-gradient(circle at top right,rgba(25,182,255,.12),transparent 24%),linear-gradient(180deg,#f8fbff 0%,#eef4f9 100%);color:var(--text)}
 a{color:inherit;text-decoration:none}
 code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.input,.textarea,select{width:100%;background:#091528;border:1px solid var(--line);color:var(--text);border-radius:14px;padding:12px 14px;outline:none;transition:.2s}
-.input:focus,.textarea:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 4px rgba(21,184,255,.12)}
+code{background:#edf4fb;border:1px solid #d9e7f3;border-radius:8px;padding:2px 6px;color:#0f507d}
+.input,.textarea,select{width:100%;background:#fff;border:1px solid var(--line);color:var(--text);border-radius:16px;padding:12px 14px;outline:none;transition:.2s;box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}
+.input:focus,.textarea:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 4px rgba(24,114,242,.12)}
 .textarea{resize:vertical;min-height:140px}
-label{display:block;margin:0 0 8px;font-size:13px;color:#c6d5ef;font-weight:600}
-.check-row{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:#d7e4fb;margin:0 0 10px}
+label{display:block;margin:0 0 8px;font-size:13px;color:#39536a;font-weight:700}
+.check-row{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--text);margin:0 0 10px}
 .check-row input{margin:0}
-.btn{appearance:none;border:0;border-radius:14px;padding:11px 16px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:.2s}
-.btn:hover{transform:translateY(-1px)}
-.btn-primary{background:linear-gradient(135deg,var(--primary),var(--primary-2));color:#06223a;box-shadow:0 10px 28px rgba(21,184,255,.24)}
-.btn-ghost{background:#0b1628;color:#d9e7ff;border:1px solid var(--line)}
-.btn-danger{background:rgba(255,84,120,.12);color:#ffd4dd;border:1px solid rgba(255,84,120,.3)}
+.btn{appearance:none;border:0;border-radius:16px;padding:11px 16px;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:.2s ease;letter-spacing:.01em}
+.btn:hover{transform:translateY(-1px);box-shadow:var(--shadow-soft)}
+.btn-primary{background:linear-gradient(135deg,var(--primary),var(--primary-2));color:#fff;box-shadow:0 14px 28px rgba(24,114,242,.18)}
+.btn-ghost{background:#fff;color:var(--text);border:1px solid var(--line)}
+.btn-danger{background:#fff2f4;color:var(--danger);border:1px solid #efc4cd}
 .btn-small{padding:8px 12px;border-radius:12px;font-size:13px}
 .btn-block{width:100%}
-.flash{padding:14px 16px;border-radius:16px;margin:0 0 18px;font-weight:600}
-.flash-success{background:rgba(24,211,155,.12);border:1px solid rgba(24,211,155,.3);color:#c9fff0}
-.flash-danger{background:rgba(255,84,120,.12);border:1px solid rgba(255,84,120,.3);color:#ffd7df}
-.flash-info{background:rgba(21,184,255,.12);border:1px solid rgba(21,184,255,.3);color:#d1f4ff}
+.flash{padding:14px 16px;border-radius:16px;margin:0 0 18px;font-weight:700}
+.flash-success{background:#eefaf5;border:1px solid #bfe8d5;color:#1e7c59}
+.flash-danger{background:#fff3f5;border:1px solid #f0c8d1;color:#b54056}
+.flash-info{background:#edf6ff;border:1px solid #c7dfff;color:#175baf}
 .muted{color:var(--muted)}
 .small{font-size:13px}
-.pill,.badge,.type-chip{display:inline-flex;align-items:center;gap:8px;padding:7px 11px;border-radius:999px;border:1px solid var(--line);background:#0a162a;color:#d5e6ff;font-size:12px;font-weight:700}
-.empty{padding:26px;border:1px dashed #38537f;border-radius:18px;color:var(--muted);text-align:center;background:rgba(10,22,42,.45)}
+.pill,.badge,.type-chip{display:inline-flex;align-items:center;gap:8px;padding:7px 11px;border-radius:999px;border:1px solid #d9e6f2;background:#f5faff;color:#1d537d;font-size:12px;font-weight:800}
+.empty{padding:26px;border:1px dashed #bcd1e3;border-radius:20px;color:var(--muted);text-align:center;background:#f8fbfe}
+.ui-icon{width:20px;height:20px;display:block}
+.hidata-logo{width:100%;height:100%;display:block}
 CSS;
 }
 
@@ -2936,16 +3009,19 @@ function loginCss(): string
 {
     return <<<'CSS'
 .login-body{min-height:100vh;display:grid;place-items:center;padding:32px}
-.login-shell{width:min(980px,100%);display:grid;grid-template-columns:1.1fr .9fr;gap:26px;align-items:center}
-.login-brand{padding:24px}
-.brand-mark{width:84px;height:84px;border-radius:26px;background:linear-gradient(135deg,var(--primary),var(--primary-2));color:#07243d;display:grid;place-items:center;font-size:34px;font-weight:900;box-shadow:var(--shadow);margin-bottom:20px}
-.brand-title{font-size:42px;font-weight:900;line-height:1.05;margin-bottom:8px}
-.brand-subtitle{font-size:18px;color:var(--muted);line-height:1.7;max-width:620px}
-.login-card{background:rgba(15,28,51,.88);border:1px solid var(--line);backdrop-filter:blur(14px);padding:30px;border-radius:28px;box-shadow:var(--shadow)}
-.login-card h1{margin:0 0 8px;font-size:30px}
-.login-card p{margin:0 0 22px}
+.login-shell{width:min(420px,100%);display:grid;gap:20px}
+.login-brand{display:grid;justify-items:center;gap:16px;text-align:center}
+.brand-mark{width:108px;height:108px;border-radius:32px;background:linear-gradient(150deg,#0f3150 0%,#165c8f 52%,#19b6ff 100%);color:#fff;display:grid;place-items:center;box-shadow:0 28px 60px rgba(15,49,80,.18)}
+.brand-mark .hidata-logo{width:54px;height:62px}
+.brand-title{font-size:44px;font-weight:900;line-height:1}
+.login-card{background:rgba(255,255,255,.86);border:1px solid rgba(215,226,236,.9);backdrop-filter:blur(16px);padding:24px;border-radius:28px;box-shadow:var(--shadow);display:grid;gap:14px}
 .login-card form{display:grid;gap:14px}
-@media (max-width:860px){.login-shell{grid-template-columns:1fr}.login-brand{padding:0}.brand-title{font-size:32px}}
+.field-shell{position:relative}
+.field-icon{position:absolute;inset:0 auto 0 14px;display:grid;place-items:center;color:#6d8398;pointer-events:none}
+.login-input{padding-left:48px;height:56px;border-radius:18px}
+.login-submit{height:56px;border-radius:18px}
+.submit-icon{width:22px;height:22px}
+@media (max-width:640px){.login-body{padding:20px}.brand-title{font-size:36px}.brand-mark{width:96px;height:96px}}
 CSS;
 }
 
@@ -2953,36 +3029,40 @@ function appCss(): string
 {
     return <<<'CSS'
 .layout{display:grid;grid-template-columns:330px 1fr;min-height:100vh}
-.sidebar{border-right:1px solid rgba(72,101,151,.24);background:rgba(7,16,31,.72);backdrop-filter:blur(18px);padding:24px 20px;display:flex;flex-direction:column;gap:18px}
+.sidebar{border-right:1px solid rgba(194,212,228,.8);background:rgba(255,255,255,.82);backdrop-filter:blur(18px);padding:24px 20px;display:flex;flex-direction:column;gap:18px}
 .brand{display:flex;align-items:center;gap:14px;padding:6px 4px 12px}
-.brand-logo{width:54px;height:54px;border-radius:18px;background:linear-gradient(135deg,var(--primary),var(--primary-2));display:grid;place-items:center;color:#06223a;font-weight:900;font-size:22px;box-shadow:var(--shadow)}
-.brand-name{font-size:18px;font-weight:900}
-.brand-tag{font-size:13px;color:var(--muted);margin-top:3px}
-.sidebar-section-title{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:800;color:#c8d7ef;text-transform:uppercase;letter-spacing:.08em}
+.brand-logo{width:60px;height:60px;border-radius:20px;background:linear-gradient(150deg,#103250 0%,#176493 58%,#19b6ff 100%);display:grid;place-items:center;color:#fff;box-shadow:var(--shadow)}
+.brand-logo .hidata-logo{width:30px;height:34px}
+.brand-name{font-size:22px;font-weight:900}
+.brand-tag{font-size:13px;color:var(--muted);margin-top:4px}
+.sidebar-section-title{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:900;color:#49657d;text-transform:uppercase;letter-spacing:.08em}
 .zone-list{display:flex;flex-direction:column;gap:8px;max-height:48vh;overflow:auto;padding-right:4px}
-.zone-item{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#0a1527;border:1px solid transparent;border-radius:16px;padding:12px 14px;transition:.2s}
-.zone-item:hover{border-color:#35507e;background:#0d1a31}
-.zone-item.active{background:linear-gradient(180deg,rgba(21,184,255,.18),rgba(77,228,255,.08));border-color:rgba(77,228,255,.35)}
+.zone-item{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#fff;border:1px solid transparent;border-radius:18px;padding:12px 14px;transition:.2s;box-shadow:0 6px 18px rgba(18,50,76,.04)}
+.zone-item:hover{border-color:#b4d2ef;background:#f6fbff}
+.zone-item.active{background:linear-gradient(180deg,#edf6ff,#f8fcff);border-color:#8ac0ff}
 .zone-name{font-weight:700;word-break:break-all}
 .zone-meta{font-size:12px;color:var(--muted)}
-.config-box{margin-top:auto;border:1px solid var(--line);background:#0a162a;border-radius:20px;padding:16px;display:grid;gap:10px}
+.config-box{margin-top:auto;border:1px solid var(--line);background:#fff;border-radius:22px;padding:16px;display:grid;gap:10px;box-shadow:var(--shadow-soft)}
 .config-row{display:grid;gap:4px}
 .config-row span{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
 .config-row strong{font-size:13px;word-break:break-all}
 .content{padding:28px;display:flex;flex-direction:column;gap:20px}
 .topbar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-.eyebrow{text-transform:uppercase;letter-spacing:.12em;color:#78dfff;font-weight:800;font-size:12px;margin-bottom:8px}
+.eyebrow{text-transform:uppercase;letter-spacing:.12em;color:#2c6bb1;font-weight:900;font-size:12px;margin-bottom:8px}
 .page-title{margin:0;font-size:34px;line-height:1.06}
 .top-actions{display:flex;align-items:center;gap:12px}
-.user-chip{padding:11px 14px;border-radius:999px;background:#0b1628;border:1px solid var(--line);font-weight:700}
-.panel{background:rgba(15,28,51,.82);border:1px solid rgba(72,101,151,.24);border-radius:26px;padding:22px;box-shadow:var(--shadow)}
+.user-chip{padding:11px 14px;border-radius:999px;background:#fff;border:1px solid var(--line);font-weight:800;box-shadow:var(--shadow-soft)}
+.panel{background:rgba(255,255,255,.92);border:1px solid rgba(194,212,228,.88);border-radius:28px;padding:22px;box-shadow:var(--shadow)}
 .hero{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;align-items:center}
 .hero h2{margin:0 0 10px;font-size:28px}
 .hero p{margin:0;color:var(--muted);line-height:1.8}
 .hero-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
-.stat-card{background:#0b1628;border:1px solid var(--line);border-radius:20px;padding:18px}
+.domain-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.stat-card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:18px;box-shadow:var(--shadow-soft)}
+.stat-card-accent{background:linear-gradient(180deg,#edf6ff 0%,#f8fbff 100%);border-color:#b7d7ff}
 .stat-card span{display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
 .stat-card strong{font-size:28px}
+.stat-card small{display:block;margin-top:8px;color:var(--muted);line-height:1.6}
 .zone-header{display:grid;grid-template-columns:1.2fr auto auto;gap:16px;align-items:center}
 .zone-title{font-size:28px;font-weight:900;word-break:break-all}
 .zone-subtitle{color:var(--muted);margin-top:6px}
@@ -2994,32 +3074,37 @@ function appCss(): string
 .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
 .toolbar-form{display:flex;gap:10px;align-items:center;flex:1;max-width:540px}
 .inline-form{display:inline}
-.table-wrap{overflow:auto;border:1px solid rgba(72,101,151,.22);border-radius:18px}
+.table-wrap{overflow:auto;border:1px solid rgba(194,212,228,.88);border-radius:20px;background:#fff}
 table{width:100%;border-collapse:collapse;min-width:900px}
 table.geo-table{min-width:1180px}
-thead th{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#9fb3d8;background:#0a1426}
-th,td{padding:16px 14px;border-bottom:1px solid rgba(72,101,151,.18);vertical-align:top}
-tbody tr:hover{background:rgba(12,25,47,.65)}
+thead th{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#6f88a0;background:#f5f9fd}
+th,td{padding:16px 14px;border-bottom:1px solid rgba(215,226,236,.88);vertical-align:top}
+tbody tr:hover{background:#f8fbfe}
 .records{display:grid;gap:6px}
-.record-line{padding:8px 10px;border:1px solid rgba(72,101,151,.18);border-radius:12px;background:#081426;white-space:pre-wrap;word-break:break-all}
+.record-line{padding:8px 10px;border:1px solid #d8e5f1;border-radius:12px;background:#f7fbff;white-space:pre-wrap;word-break:break-all}
 .action-stack{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
 .status-stack{display:grid;gap:6px}
-.pill-success{background:rgba(24,211,155,.12);border-color:rgba(24,211,155,.3);color:#c9fff0}
-.pill-danger{background:rgba(255,84,120,.12);border-color:rgba(255,84,120,.3);color:#ffd7df}
-.pill-muted{background:#0b1628;border-color:var(--line);color:#d5e6ff}
+.pill-success{background:#eefaf5;border-color:#bfe8d5;color:#1f8b61}
+.pill-danger{background:#fff3f5;border-color:#f0c8d1;color:#b54056}
+.pill-muted{background:#f6f9fc;border-color:var(--line);color:#536b82}
 .search-form{display:grid;gap:8px}
-.label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#b9cbe8}
-.modal{position:fixed;inset:0;background:rgba(2,7,15,.68);display:none;align-items:center;justify-content:center;padding:22px;z-index:60}
+.label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#6f88a0}
+.modal{position:fixed;inset:0;background:rgba(15,36,54,.24);display:none;align-items:center;justify-content:center;padding:22px;z-index:60}
 .modal.open{display:flex}
-.modal-card{width:min(760px,100%);background:#0e1b32;border:1px solid var(--line);border-radius:26px;box-shadow:var(--shadow);padding:22px}
+.modal-card{width:min(760px,100%);background:#fff;border:1px solid var(--line);border-radius:28px;box-shadow:var(--shadow);padding:22px}
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
 .modal-header h3{margin:0;font-size:24px}
-.icon-btn{width:42px;height:42px;border-radius:14px;border:1px solid var(--line);background:#0b1628;color:#fff;font-size:24px;cursor:pointer}
+.icon-btn{width:42px;height:42px;border-radius:14px;border:1px solid var(--line);background:#fff;color:var(--text);font-size:24px;cursor:pointer}
+.modal-intro{margin:-4px 0 18px;color:var(--muted);line-height:1.8}
+.modal-scope{display:grid;gap:3px;margin:-4px 0 18px;padding:14px 16px;border-radius:18px;background:#f6fbff;border:1px solid #d6e8f7}
+.modal-scope span{font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#5d7b95}
+.modal-scope strong{font-size:18px}
+.modal-scope small{color:var(--muted);line-height:1.6}
 .grid-two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .modal-footer{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
 .hint{font-size:13px;color:var(--muted);line-height:1.7;padding-top:12px}
-@media (max-width:1100px){.layout{grid-template-columns:280px 1fr}.hero,.zone-header{grid-template-columns:1fr}.zone-badges,.zone-actions{justify-content:flex-start}}
-@media (max-width:860px){.layout{grid-template-columns:1fr}.sidebar{border-right:0;border-bottom:1px solid rgba(72,101,151,.24)}.content{padding:18px}.topbar,.toolbar{flex-direction:column;align-items:stretch}.grid-two,.hero-grid{grid-template-columns:1fr}}
+@media (max-width:1100px){.layout{grid-template-columns:280px 1fr}.hero,.zone-header,.domain-stats{grid-template-columns:1fr}.zone-badges,.zone-actions{justify-content:flex-start}}
+@media (max-width:860px){.layout{grid-template-columns:1fr}.sidebar{border-right:0;border-bottom:1px solid rgba(194,212,228,.88)}.content{padding:18px}.topbar,.toolbar{flex-direction:column;align-items:stretch}.grid-two,.hero-grid,.domain-stats{grid-template-columns:1fr}}
 CSS;
 }
 
