@@ -45,6 +45,8 @@ PHP_VERSION="${PHP_VERSION:-$PHP_VERSION_DEFAULT}"
 PHP_FPM_SERVICE="${PHP_FPM_SERVICE:-php${PHP_VERSION}-fpm}"
 PHP_FPM_SOCKET="${PHP_FPM_SOCKET:-/run/php/php${PHP_VERSION}-fpm.sock}"
 PDNS_SERVICE="${PDNS_SERVICE:-$PDNS_SERVICE_DEFAULT}"
+PDNS_RUNTIME_USER="${PDNS_RUNTIME_USER:-pdns}"
+PDNS_RUNTIME_GROUP="${PDNS_RUNTIME_GROUP:-pdns}"
 PDNS_DB_NAME="${PDNS_DB_NAME:-$PDNS_DB_NAME_DEFAULT}"
 PDNS_DB_USER="${PDNS_DB_USER:-$PDNS_DB_USER_DEFAULT}"
 PDNS_DB_PASSWORD="${PDNS_DB_PASSWORD:-}"
@@ -213,6 +215,16 @@ write_file() {
   rm -f "$tmp"
 }
 
+pdns_config_group() {
+  if id "$PDNS_RUNTIME_USER" >/dev/null 2>&1; then
+    id -gn "$PDNS_RUNTIME_USER"
+  elif getent group "$PDNS_RUNTIME_GROUP" >/dev/null 2>&1; then
+    printf '%s\n' "$PDNS_RUNTIME_GROUP"
+  else
+    printf 'root\n'
+  fi
+}
+
 mysql_exec() {
   local sql="$1"
   if [[ "$DRY_RUN" == "1" ]]; then
@@ -255,6 +267,13 @@ php_quote() {
   local value="$1"
   value=${value//\\/\\\\}
   value=${value//\'/\\\'}
+  printf "'%s'" "$value"
+}
+
+mysql_quote() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\'/\'\'}
   printf "'%s'" "$value"
 }
 
@@ -341,17 +360,24 @@ is_loopback_host() {
   [[ "$value" == "127.0.0.1" || "$value" == "::1" || "$value" == "localhost" ]]
 }
 
+ensure_port_number() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[0-9]+$ ]] || die "${name} must be numeric."
+  (( value >= 1 && value <= 65535 )) || die "${name} must be between 1 and 65535."
+}
+
 validate_inputs() {
   ensure_identifier "PDNS_DB_NAME" "$PDNS_DB_NAME"
   ensure_identifier "PDNS_DB_USER" "$PDNS_DB_USER"
   [[ "$APP_SESSION_IDLE_TIMEOUT" =~ ^[0-9]+$ ]] || die "APP_SESSION_IDLE_TIMEOUT must be numeric."
   [[ "$APP_SESSION_ABSOLUTE_TIMEOUT" =~ ^[0-9]+$ ]] || die "APP_SESSION_ABSOLUTE_TIMEOUT must be numeric."
   [[ "$KEEP_RELEASES" =~ ^[0-9]+$ ]] || die "KEEP_RELEASES must be numeric."
-  [[ "$PDNS_DB_PORT" =~ ^[0-9]+$ ]] || die "PDNS_DB_PORT must be numeric."
-  [[ "$PDNS_API_PORT" =~ ^[0-9]+$ ]] || die "PDNS_API_PORT must be numeric."
-  [[ "$PDNS_LOCAL_PORT" =~ ^[0-9]+$ ]] || die "PDNS_LOCAL_PORT must be numeric."
-  [[ "$APP_HTTP_PORT" =~ ^[0-9]+$ ]] || die "APP_HTTP_PORT must be numeric."
-  [[ "$APP_HTTPS_PORT" =~ ^[0-9]+$ ]] || die "APP_HTTPS_PORT must be numeric."
+  (( KEEP_RELEASES >= 1 )) || die "KEEP_RELEASES must be at least 1."
+  ensure_port_number "PDNS_DB_PORT" "$PDNS_DB_PORT"
+  ensure_port_number "PDNS_API_PORT" "$PDNS_API_PORT"
+  ensure_port_number "PDNS_LOCAL_PORT" "$PDNS_LOCAL_PORT"
+  ensure_port_number "APP_HTTP_PORT" "$APP_HTTP_PORT"
+  ensure_port_number "APP_HTTPS_PORT" "$APP_HTTPS_PORT"
   is_loopback_host "$PDNS_DB_HOST" || die "PDNS_DB_HOST must stay on the local host (127.0.0.1, ::1, or localhost) because this installer provisions a local MariaDB instance."
   is_loopback_host "$PDNS_API_BIND" || die "PDNS_API_BIND must stay on loopback (127.0.0.1, ::1, or localhost) so the panel can safely reach the local PowerDNS API."
   if is_true "$APP_ENABLE_HTTPS"; then
@@ -401,10 +427,12 @@ extract_pdns_setting() {
 }
 
 hydrate_existing_configuration() {
-  local existing_app_api_key existing_app_hash existing_pdns_api_key existing_pdns_db_password
+  local existing_app_api_key existing_app_hash existing_app_username
+  local existing_pdns_api_key existing_pdns_db_password
   local existing_db_name existing_db_user existing_db_password
   existing_app_api_key=$(extract_php_config_value "$SHARED_CONFIG_PATH" "pdns" "api_key")
   existing_app_hash=$(extract_php_config_value "$SHARED_CONFIG_PATH" "auth" "password_hash")
+  existing_app_username=$(extract_php_config_value "$SHARED_CONFIG_PATH" "auth" "username")
   existing_db_name=$(extract_php_config_value "$SHARED_CONFIG_PATH" "database" "name")
   existing_db_user=$(extract_php_config_value "$SHARED_CONFIG_PATH" "database" "username")
   existing_db_password=$(extract_php_config_value "$SHARED_CONFIG_PATH" "database" "password")
@@ -412,11 +440,20 @@ hydrate_existing_configuration() {
   existing_pdns_db_password=$(extract_pdns_setting "$PDNS_CONFIG_FILE" "gmysql-password")
 
   if [[ -f "$SHARED_CONFIG_PATH" && "$APP_CONFIG_OVERWRITE" != "1" ]]; then
-    if [[ -n "$existing_db_name" && -n "$existing_db_user" && -n "$existing_db_password" ]]; then
+    if [[ -n "$existing_app_api_key" && -n "$existing_app_hash" && -n "$existing_app_username" \
+       && -n "$existing_db_name" && -n "$existing_db_user" && -n "$existing_db_password" ]]; then
       PRESERVE_APP_CONFIG=1
       log "Preserving existing shared config.php"
+      [[ -n "$existing_app_username" ]] && APP_USERNAME="$existing_app_username"
+      PDNS_DB_NAME="$existing_db_name"
+      PDNS_DB_USER="$existing_db_user"
+      PDNS_DB_PASSWORD="$existing_db_password"
+      PDNS_API_KEY="${existing_app_api_key:-$existing_pdns_api_key}"
+      APP_PASSWORD_HASH="$existing_app_hash"
+      APP_PASSWORD=""
+      log "Using the existing panel/database/API settings from shared config.php. Set APP_CONFIG_OVERWRITE=1 if you want to rotate them."
     else
-      log "Existing shared config.php is missing GeoDNS database settings; regenerating it."
+      log "Existing shared config.php is incomplete; regenerating it."
     fi
   fi
 
@@ -428,6 +465,19 @@ hydrate_existing_configuration() {
   fi
   if [[ -z "$APP_PASSWORD_HASH" ]]; then
     APP_PASSWORD_HASH="${existing_app_hash:-}"
+  fi
+}
+
+capture_dns_port_listeners() {
+  local tcp_listeners udp_listeners
+  tcp_listeners=$(ss -Hlntp "( sport = :53 )" 2>/dev/null || true)
+  udp_listeners=$(ss -Hlnup "( sport = :53 )" 2>/dev/null || true)
+  if [[ -n "$tcp_listeners" && -n "$udp_listeners" ]]; then
+    printf '%s\n%s\n' "$tcp_listeners" "$udp_listeners"
+  elif [[ -n "$tcp_listeners" ]]; then
+    printf '%s\n' "$tcp_listeners"
+  elif [[ -n "$udp_listeners" ]]; then
+    printf '%s\n' "$udp_listeners"
   fi
 }
 
@@ -739,7 +789,7 @@ maybe_run_composer() {
   fi
   have composer || die "composer.json exists but Composer is not available."
   log "Running Composer install..."
-  run composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader -d "$release_dir"
+  run env COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader -d "$release_dir"
 }
 
 detect_schema_file() {
@@ -750,15 +800,18 @@ detect_schema_file() {
 }
 
 configure_database() {
+  local db_password_sql
+  db_password_sql=$(mysql_quote "$PDNS_DB_PASSWORD")
+
   log "Starting MariaDB..."
   run systemctl enable --now mariadb
 
   log "Configuring PowerDNS database and user..."
   mysql_exec "CREATE DATABASE IF NOT EXISTS \`${PDNS_DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-  mysql_exec "CREATE USER IF NOT EXISTS '${PDNS_DB_USER}'@'127.0.0.1' IDENTIFIED BY '${PDNS_DB_PASSWORD}';"
-  mysql_exec "CREATE USER IF NOT EXISTS '${PDNS_DB_USER}'@'localhost' IDENTIFIED BY '${PDNS_DB_PASSWORD}';"
-  mysql_exec "ALTER USER '${PDNS_DB_USER}'@'127.0.0.1' IDENTIFIED BY '${PDNS_DB_PASSWORD}';"
-  mysql_exec "ALTER USER '${PDNS_DB_USER}'@'localhost' IDENTIFIED BY '${PDNS_DB_PASSWORD}';"
+  mysql_exec "CREATE USER IF NOT EXISTS '${PDNS_DB_USER}'@'127.0.0.1' IDENTIFIED BY ${db_password_sql};"
+  mysql_exec "CREATE USER IF NOT EXISTS '${PDNS_DB_USER}'@'localhost' IDENTIFIED BY ${db_password_sql};"
+  mysql_exec "ALTER USER '${PDNS_DB_USER}'@'127.0.0.1' IDENTIFIED BY ${db_password_sql};"
+  mysql_exec "ALTER USER '${PDNS_DB_USER}'@'localhost' IDENTIFIED BY ${db_password_sql};"
   mysql_exec "GRANT ALL PRIVILEGES ON \`${PDNS_DB_NAME}\`.* TO '${PDNS_DB_USER}'@'127.0.0.1';"
   mysql_exec "GRANT ALL PRIVILEGES ON \`${PDNS_DB_NAME}\`.* TO '${PDNS_DB_USER}'@'localhost';"
   mysql_exec "FLUSH PRIVILEGES;"
@@ -950,7 +1003,7 @@ assert_dns_port_available() {
     return 0
   fi
   local listeners
-  listeners=$(ss -Hlnup "( sport = :53 )" 2>/dev/null || true)
+  listeners=$(capture_dns_port_listeners)
   if [[ -n "$listeners" ]]; then
     warn "The following process(es) are already listening on port 53:"
     printf '%s\n' "$listeners" >&2
@@ -962,7 +1015,9 @@ configure_pdns() {
   ensure_pdns_include_dir
   run mkdir -p /etc/powerdns/pdns.d
   local geoip_database_files
+  local pdns_group
   geoip_database_files=$(detect_geoip_database_files)
+  pdns_group=$(pdns_config_group)
   log "Writing PowerDNS GeoIP zone helper file..."
   write_file "$PDNS_GEOIP_ZONES_FILE" 0644 root root <<EOF
 # Managed by ${APP_NAME} installer
@@ -998,7 +1053,7 @@ EOF
     if [[ "$PDNS_LOCAL_PORT" != "53" ]]; then
       printf 'local-port=%s\n' "$PDNS_LOCAL_PORT"
     fi
-  } | write_file "$PDNS_CONFIG_FILE" 0640 root root
+  } | write_file "$PDNS_CONFIG_FILE" 0640 root "$pdns_group"
 }
 
 configure_php_runtime() {
@@ -1171,6 +1226,9 @@ validate_release_files() {
 
 validate_service_configs() {
   log "Validating PowerDNS and nginx configuration..."
+  if id "$PDNS_RUNTIME_USER" >/dev/null 2>&1; then
+    run su -s /bin/sh -c "test -r '$PDNS_CONFIG_FILE'" "$PDNS_RUNTIME_USER"
+  fi
   run pdns_server --config=check
   run nginx -t
 }
@@ -1182,6 +1240,7 @@ restart_services() {
   run systemctl enable --now nginx
   run systemctl restart "$PHP_FPM_SERVICE"
   run systemctl restart "$PDNS_SERVICE"
+  PDNS_SERVICE_STOPPED_BY_INSTALLER=0
   run systemctl restart nginx
 }
 
@@ -1267,7 +1326,11 @@ verify_panel() {
   log "Verifying panel login page..."
   curl "${curl_args[@]}" -c "$cookie_jar" "$panel_root_url" -o "$login_page" \
     || die "Failed to load the panel login page at ${panel_root_url}"
-  grep -Fq '<h1>Sign in</h1>' "$login_page" \
+  grep -Fq 'name="csrf_token"' "$login_page" \
+    || die "The panel login page did not render a CSRF token as expected."
+  grep -Fq 'name="username"' "$login_page" \
+    || die "The panel login page did not render a username field as expected."
+  grep -Fq 'name="password"' "$login_page" \
     || die "The panel login page did not render as expected."
 
   if [[ -z "$APP_PASSWORD" ]]; then
@@ -1300,8 +1363,8 @@ PY
     "$panel_root_url" -o "$dashboard_page" \
     || die "Failed to sign in to the panel with the configured application credentials."
 
-  grep -Fq 'Signed in successfully.' "$dashboard_page" \
-    || die "The panel did not confirm a successful login after installation."
+  grep -Fq 'value="logout"' "$dashboard_page" \
+    || die "The authenticated panel view did not render a logout action after login."
   grep -Fq 'Sign out' "$dashboard_page" \
     || die "The authenticated panel view did not render as expected after login."
 
