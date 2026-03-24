@@ -95,6 +95,8 @@ if (isset($_GET['download']) && $_GET['download'] === 'zone' && $zoneName !== ''
 
 $zones = fetchZones($config);
 $geoRuleStats = fetchGeoRuleStats($config);
+$countryIpSets = fetchCountryIpSets($config);
+$countryIpSetStats = summarizeCountryIpSets($countryIpSets);
 $currentZone = $zoneName !== '' ? findZoneByName($zones, $zoneName) : null;
 $geoRules = [];
 $geoRuleGroups = [];
@@ -119,6 +121,8 @@ $pageData = [
     'geoRules' => $geoRules,
     'geoRuleGroups' => $geoRuleGroups,
     'geoRuleStats' => $geoRuleStats,
+    'countryIpSets' => $countryIpSets,
+    'countryIpSetStats' => $countryIpSetStats,
     'rrsets' => $rrsets,
     'recordFilter' => $recordFilter,
     'view' => $view,
@@ -279,6 +283,16 @@ CREATE TABLE IF NOT EXISTS hidata_geo_rules (
     UNIQUE KEY uq_hidata_geo_rules_zone_fqdn_type (zone_name, fqdn, record_type),
     KEY idx_hidata_geo_rules_zone_name (zone_name),
     KEY idx_hidata_geo_rules_zone_fqdn (zone_name, fqdn)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+SQL);
+        $pdo->exec(<<<'SQL'
+CREATE TABLE IF NOT EXISTS hidata_geo_country_sets (
+    country_code CHAR(2) NOT NULL,
+    country_name VARCHAR(120) NOT NULL DEFAULT '',
+    cidrs_json LONGTEXT NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (country_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 SQL);
     } catch (Throwable $e) {
@@ -758,6 +772,48 @@ function handleMutation(array $config): never
                     'record_type' => $deletedRule['record_type'],
                 ]);
                 $flash = ['type' => 'success', 'message' => 'GeoDNS rule deleted successfully.'];
+                break;
+
+            case 'create_country_ip_set':
+                $payload = buildCountryIpSetPayloadFromPost();
+                $countryIpSet = saveCountryIpSetPayload($config, $payload, null);
+                $syncResult = syncGeoRulesForCountrySetChange($config, (string)$countryIpSet['country_code']);
+                $flash = ['type' => 'success', 'message' => sprintf(
+                    'Country CIDR database saved for %s with %d CIDR range(s). %d GeoDNS rule set(s) re-synced.',
+                    $countryIpSet['country_code'],
+                    (int)$countryIpSet['cidr_count'],
+                    (int)$syncResult['synced_sets']
+                )];
+                break;
+
+            case 'update_country_ip_set':
+                $existingCountryCode = normalizeCountryCode((string)($_POST['country_db_original_code'] ?? ''));
+                $payload = buildCountryIpSetPayloadFromPost();
+                if ($payload['country_code'] !== $existingCountryCode) {
+                    throw new RuntimeException('Country code changes are not supported. Delete and recreate the entry instead.');
+                }
+                $countryIpSet = saveCountryIpSetPayload($config, $payload, $existingCountryCode);
+                $syncResult = syncGeoRulesForCountrySetChange($config, (string)$countryIpSet['country_code']);
+                $flash = ['type' => 'success', 'message' => sprintf(
+                    'Country CIDR database updated for %s. %d GeoDNS rule set(s) re-synced.',
+                    $countryIpSet['country_code'],
+                    (int)$syncResult['synced_sets']
+                )];
+                break;
+
+            case 'delete_country_ip_set':
+                $countryCode = normalizeCountryCode((string)($_POST['country_db_original_code'] ?? ''));
+                $countryIpSet = fetchCountryIpSetByCode($config, $countryCode);
+                if ((int)$countryIpSet['usage_count'] > 0) {
+                    throw new RuntimeException(sprintf(
+                        'Country %s is still used by %d GeoDNS rule(s). Update it instead of deleting it.',
+                        $countryIpSet['country_code'],
+                        (int)$countryIpSet['usage_count']
+                    ));
+                }
+                $stmt = geoDb($config)->prepare('DELETE FROM hidata_geo_country_sets WHERE country_code = :country_code');
+                $stmt->execute(['country_code' => $countryIpSet['country_code']]);
+                $flash = ['type' => 'success', 'message' => 'Country CIDR database entry deleted successfully.'];
                 break;
 
             case 'sync_geo_rule':
@@ -1592,6 +1648,272 @@ function fetchGeoRuleStats(array $config): array
     ];
 }
 
+function fetchCountryIpSets(array $config, bool $refreshCache = false): array
+{
+    static $cache = [];
+
+    $database = $config['database'] ?? [];
+    $host = trim((string)($database['host'] ?? '127.0.0.1'));
+    $port = (int)($database['port'] ?? 3306);
+    $name = trim((string)($database['name'] ?? ''));
+    $key = $host . '|' . $port . '|' . $name;
+
+    if ($refreshCache) {
+        unset($cache[$key]);
+    }
+
+    if (isset($cache[$key]) && is_array($cache[$key])) {
+        return $cache[$key];
+    }
+
+    $usageCounts = fetchCountryIpSetUsageCounts($config);
+    $rows = geoDb($config)->query(
+        'SELECT * FROM hidata_geo_country_sets ORDER BY country_code ASC'
+    )->fetchAll();
+
+    $cache[$key] = array_map(
+        static fn(array $row): array => hydrateCountryIpSetRow($row, $usageCounts[(string)($row['country_code'] ?? '')] ?? 0),
+        $rows ?: []
+    );
+
+    return $cache[$key];
+}
+
+function fetchCountryIpSetMap(array $config, bool $refreshCache = false): array
+{
+    $map = [];
+    foreach (fetchCountryIpSets($config, $refreshCache) as $countryIpSet) {
+        $map[(string)$countryIpSet['country_code']] = $countryIpSet;
+    }
+    return $map;
+}
+
+function summarizeCountryIpSets(array $countryIpSets): array
+{
+    $cidrCount = 0;
+    $usedCount = 0;
+    foreach ($countryIpSets as $countryIpSet) {
+        $cidrCount += (int)($countryIpSet['cidr_count'] ?? 0);
+        if ((int)($countryIpSet['usage_count'] ?? 0) > 0) {
+            $usedCount++;
+        }
+    }
+
+    return [
+        'country_count' => count($countryIpSets),
+        'cidr_count' => $cidrCount,
+        'used_country_count' => $usedCount,
+    ];
+}
+
+function fetchCountryIpSetUsageCounts(array $config): array
+{
+    $rows = geoDb($config)->query('SELECT country_codes FROM hidata_geo_rules')->fetchAll();
+    $usageCounts = [];
+
+    foreach ($rows ?: [] as $row) {
+        $codes = preg_split('/[\s,]+/', strtoupper(trim((string)($row['country_codes'] ?? '')))) ?: [];
+        foreach ($codes as $code) {
+            $code = trim((string)$code);
+            if (!preg_match('/^[A-Z]{2}$/', $code)) {
+                continue;
+            }
+            $usageCounts[$code] = (int)($usageCounts[$code] ?? 0) + 1;
+        }
+    }
+
+    return $usageCounts;
+}
+
+function hydrateCountryIpSetRow(array $row, int $usageCount = 0): array
+{
+    $countryCode = strtoupper(trim((string)($row['country_code'] ?? '')));
+    $cidrs = decodeGeoStringList((string)($row['cidrs_json'] ?? '[]'));
+
+    return [
+        'country_code' => $countryCode,
+        'country_name' => trim((string)($row['country_name'] ?? '')) !== ''
+            ? trim((string)$row['country_name'])
+            : $countryCode,
+        'cidrs' => $cidrs,
+        'cidr_count' => count($cidrs),
+        'usage_count' => $usageCount,
+        'created_at' => (string)($row['created_at'] ?? ''),
+        'updated_at' => (string)($row['updated_at'] ?? ''),
+    ];
+}
+
+function fetchCountryIpSetByCode(array $config, string $countryCode): array
+{
+    $countryCode = normalizeCountryCode($countryCode);
+    $stmt = geoDb($config)->prepare('SELECT * FROM hidata_geo_country_sets WHERE country_code = :country_code');
+    $stmt->execute(['country_code' => $countryCode]);
+    $row = $stmt->fetch();
+    if (!is_array($row)) {
+        throw new RuntimeException('Country CIDR set not found.');
+    }
+
+    $usageCounts = fetchCountryIpSetUsageCounts($config);
+    return hydrateCountryIpSetRow($row, $usageCounts[$countryCode] ?? 0);
+}
+
+function normalizeCountryCode(string $countryCode): string
+{
+    $countryCode = strtoupper(trim($countryCode));
+    if (!preg_match('/^[A-Z]{2}$/', $countryCode)) {
+        throw new RuntimeException('Country code must use two-letter ISO values such as IR or DE.');
+    }
+    return $countryCode;
+}
+
+function buildCountryIpSetPayloadFromPost(): array
+{
+    $countryCode = normalizeCountryCode((string)($_POST['country_db_code'] ?? ''));
+    $countryName = trim((string)($_POST['country_db_name'] ?? ''));
+    $cidrs = normalizeCountryCidrList((string)($_POST['country_db_cidrs'] ?? ''));
+
+    return [
+        'country_code' => $countryCode,
+        'country_name' => $countryName !== '' ? $countryName : $countryCode,
+        'cidrs' => $cidrs,
+    ];
+}
+
+function normalizeCountryCidrList(string $raw): array
+{
+    $tokens = preg_split('/[\r\n,]+/', $raw) ?: [];
+    $cidrs = [];
+
+    foreach ($tokens as $token) {
+        $token = trim($token);
+        if ($token === '' || str_starts_with($token, '#') || str_starts_with($token, ';')) {
+            continue;
+        }
+
+        $cidr = normalizeCidrEntry($token);
+        if (!in_array($cidr, $cidrs, true)) {
+            $cidrs[] = $cidr;
+        }
+    }
+
+    if ($cidrs === []) {
+        throw new RuntimeException('Provide at least one CIDR range for the country database entry.');
+    }
+
+    return $cidrs;
+}
+
+function normalizeCidrEntry(string $value): string
+{
+    $value = trim($value);
+    if ($value === '') {
+        throw new RuntimeException('CIDR entries may not be empty.');
+    }
+
+    if (!str_contains($value, '/')) {
+        if (filter_var($value, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return $value . '/32';
+        }
+        if (filter_var($value, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            return inet_ntop((string)inet_pton($value)) . '/128';
+        }
+        throw new RuntimeException('Invalid CIDR or IP entry: ' . $value);
+    }
+
+    [$ip, $prefix] = array_pad(explode('/', $value, 2), 2, '');
+    $ip = trim($ip);
+    $prefix = trim($prefix);
+    if ($ip === '' || $prefix === '' || !ctype_digit($prefix)) {
+        throw new RuntimeException('CIDR entries must use the format IP/prefix, for example 185.112.35.0/24.');
+    }
+
+    $packed = @inet_pton($ip);
+    if ($packed === false) {
+        throw new RuntimeException('Invalid CIDR IP address: ' . $ip);
+    }
+
+    $maxPrefix = strlen($packed) === 4 ? 32 : 128;
+    $prefixInt = (int)$prefix;
+    if ($prefixInt < 0 || $prefixInt > $maxPrefix) {
+        throw new RuntimeException(sprintf('CIDR prefix for %s must be between 0 and %d.', $ip, $maxPrefix));
+    }
+
+    return inet_ntop($packed) . '/' . $prefixInt;
+}
+
+function saveCountryIpSetPayload(array $config, array $payload, ?string $existingCountryCode = null): array
+{
+    $pdo = geoDb($config);
+    $now = date('Y-m-d H:i:s');
+
+    try {
+        if ($existingCountryCode === null) {
+            $stmt = $pdo->prepare(
+                'INSERT INTO hidata_geo_country_sets (country_code, country_name, cidrs_json, created_at, updated_at)
+                 VALUES (:country_code, :country_name, :cidrs_json, :created_at, :updated_at)'
+            );
+            $stmt->execute([
+                'country_code' => $payload['country_code'],
+                'country_name' => $payload['country_name'],
+                'cidrs_json' => encodeGeoStringList($payload['cidrs']),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        } else {
+            $stmt = $pdo->prepare(
+                'UPDATE hidata_geo_country_sets
+                 SET country_name = :country_name, cidrs_json = :cidrs_json, updated_at = :updated_at
+                 WHERE country_code = :country_code'
+            );
+            $stmt->execute([
+                'country_name' => $payload['country_name'],
+                'cidrs_json' => encodeGeoStringList($payload['cidrs']),
+                'updated_at' => $now,
+                'country_code' => normalizeCountryCode($existingCountryCode),
+            ]);
+        }
+    } catch (PDOException $e) {
+        if ((int)$e->getCode() === 23000) {
+            throw new RuntimeException('A country CIDR database entry for ' . $payload['country_code'] . ' already exists.');
+        }
+        throw $e;
+    }
+
+    return fetchCountryIpSetByCode($config, (string)$payload['country_code']);
+}
+
+function syncGeoRulesForCountrySetChange(array $config, string $countryCode): array
+{
+    $countryCode = normalizeCountryCode($countryCode);
+    $stmt = geoDb($config)->prepare(
+        "SELECT DISTINCT zone_name, fqdn FROM hidata_geo_rules
+         WHERE FIND_IN_SET(:country_code, country_codes) > 0
+         ORDER BY zone_name ASC, fqdn ASC"
+    );
+    $stmt->execute(['country_code' => $countryCode]);
+    $targets = $stmt->fetchAll() ?: [];
+
+    $syncedSets = 0;
+    $errors = [];
+    foreach ($targets as $target) {
+        try {
+            $zone = fetchZone($config, (string)$target['zone_name']);
+            syncGeoRuleSet($config, $zone, (string)$target['fqdn']);
+            $syncedSets++;
+        } catch (Throwable $e) {
+            $errors[] = rtrim((string)($target['fqdn'] ?? ''), '.') . ': ' . $e->getMessage();
+        }
+    }
+
+    if ($errors !== []) {
+        throw new RuntimeException('Country CIDR database updated, but some GeoDNS rule sets failed to resync: ' . implode(' | ', $errors));
+    }
+
+    return [
+        'synced_sets' => $syncedSets,
+    ];
+}
+
 function fetchGeoRulesForZone(array $config, string $zoneName): array
 {
     $stmt = geoDb($config)->prepare(
@@ -2096,7 +2418,7 @@ function applyGeoRuleSetToPowerDns(array $config, array $zone, string $fqdn, arr
     $records = [];
     foreach (sortGeoRulesForSync($enabledRules) as $rule) {
         $records[] = [
-            'content' => buildGeoLuaRecordContent($rule),
+            'content' => buildGeoLuaRecordContent($config, $rule),
             'disabled' => false,
         ];
     }
@@ -2113,9 +2435,9 @@ function applyGeoRuleSetToPowerDns(array $config, array $zone, string $fqdn, arr
     maybeRectify($config, $zone);
 }
 
-function buildGeoLuaRecordContent(array $rule): string
+function buildGeoLuaRecordContent(array $config, array $rule): string
 {
-    $countryExpression = geoLuaCountryExpression($rule['country_codes']);
+    $countryMatchExpression = buildGeoLuaCountryMatchExpression($config, $rule['country_codes']);
     $countryPool = geoLuaStringArray($rule['country_answers']);
     $defaultPool = geoLuaStringArray($rule['default_answers']);
     $recordType = strtoupper((string)$rule['record_type']);
@@ -2130,13 +2452,51 @@ function buildGeoLuaRecordContent(array $rule): string
     }
 
     $script = sprintf(
-        ';if country(%s) then return %s else return %s end',
-        $countryExpression,
+        ';if %s then return %s else return %s end',
+        $countryMatchExpression,
         $matchedExpression,
         $defaultExpression
     );
 
     return $recordType . ' "' . str_replace('"', '\"', $script) . '"';
+}
+
+function buildGeoLuaCountryMatchExpression(array $config, array $countryCodes): string
+{
+    $countrySetMap = fetchCountryIpSetMap($config);
+    $customCidrs = [];
+    $fallbackCountryCodes = [];
+
+    foreach ($countryCodes as $countryCode) {
+        $countryCode = normalizeCountryCode((string)$countryCode);
+        $countryIpSet = $countrySetMap[$countryCode] ?? null;
+        if (is_array($countryIpSet) && ($countryIpSet['cidrs'] ?? []) !== []) {
+            foreach ($countryIpSet['cidrs'] as $cidr) {
+                if (!in_array((string)$cidr, $customCidrs, true)) {
+                    $customCidrs[] = (string)$cidr;
+                }
+            }
+            continue;
+        }
+        $fallbackCountryCodes[] = $countryCode;
+    }
+
+    $expressions = [];
+    if ($customCidrs !== []) {
+        $expressions[] = 'netmask(' . geoLuaStringArray($customCidrs) . ')';
+    }
+    if ($fallbackCountryCodes !== []) {
+        $expressions[] = 'country(' . geoLuaCountryExpression($fallbackCountryCodes) . ')';
+    }
+
+    if ($expressions === []) {
+        return 'false';
+    }
+    if (count($expressions) === 1) {
+        return $expressions[0];
+    }
+
+    return '(' . implode(' or ', $expressions) . ')';
 }
 
 function geoLuaCountryExpression(array $countryCodes): string
@@ -2551,6 +2911,9 @@ function isAsyncMutationAction(string $action): bool
         'sync_geo_rule',
         'sync_geo_zone',
         'rectify_zone',
+        'create_country_ip_set',
+        'update_country_ip_set',
+        'delete_country_ip_set',
     ], true);
 }
 
@@ -2648,6 +3011,8 @@ function renderPage(array $data): void
     $geoRules = $data['geoRules'];
     $geoRuleGroups = $data['geoRuleGroups'];
     $geoRuleStats = $data['geoRuleStats'];
+    $countryIpSets = $data['countryIpSets'];
+    $countryIpSetStats = $data['countryIpSetStats'];
     $rrsets = $data['rrsets'];
     $recordFilter = $data['recordFilter'];
     $currentZoneDisplayName = $currentZone ? rtrim((string)$currentZone['name'], '.') : '';
@@ -2733,6 +3098,8 @@ function renderWorkspaceContent(array $data): string
     $zoneDetails = $data['zoneDetails'];
     $geoRules = $data['geoRules'];
     $geoRuleStats = $data['geoRuleStats'];
+    $countryIpSets = $data['countryIpSets'];
+    $countryIpSetStats = $data['countryIpSetStats'];
     $rrsets = $data['rrsets'];
     $recordFilter = $data['recordFilter'];
     $zones = $data['zones'];
@@ -2783,6 +3150,8 @@ function renderWorkspaceContent(array $data): string
     echo '</div>';
     echo '</section>';
 
+    echo renderCountryIpDatabaseSection($countryIpSets, $countryIpSetStats);
+
     if (!$currentZone || !$zoneDetails) {
         echo '<section class="panel hero hero-panel">';
         echo '<div class="hero-copy">';
@@ -2800,6 +3169,8 @@ function renderWorkspaceContent(array $data): string
         if ($canCreateZones) {
             echo buildCreateZoneModal();
         }
+        echo buildCountryIpSetAddModal();
+        echo buildCountryIpSetEditModal();
 
         return (string)ob_get_clean();
     }
@@ -2954,6 +3325,8 @@ function renderWorkspaceContent(array $data): string
     if ($canCreateZones) {
         echo buildCreateZoneModal();
     }
+    echo buildCountryIpSetAddModal();
+    echo buildCountryIpSetEditModal();
     if ($canModifyCurrentZone) {
         echo buildGeoAddModal((string)$zoneDetails['name'], $config);
         echo buildGeoEditModal((string)$zoneDetails['name']);
@@ -2965,8 +3338,98 @@ function renderWorkspaceContent(array $data): string
     return (string)ob_get_clean();
 }
 
+function renderCountryIpDatabaseSection(array $countryIpSets, array $stats): string
+{
+    $html = '<section class="panel">';
+    $html .= '<div class="section-head">';
+    $html .= '<div>';
+    $html .= '<span class="section-kicker">Custom matcher</span>';
+    $html .= '<h2 class="section-title">Country CIDR Database</h2>';
+    $html .= '<p class="section-copy">Manage country-to-CIDR mappings here. GeoDNS rules automatically use these CIDR lists through PowerDNS Lua <code>netmask()</code> matching, and any country code without a custom list falls back to the default backend GeoIP lookup.</p>';
+    $html .= '</div>';
+    $html .= '<div class="rule-summary"><span class="pill">Countries ' . (int)($stats['country_count'] ?? 0) . '</span><span class="pill">CIDRs ' . (int)($stats['cidr_count'] ?? 0) . '</span><a class="btn btn-primary" href="#" onclick="openModal(\'countryIpSetAddModal\');return false;">Add country</a></div>';
+    $html .= '</div>';
+
+    if ($countryIpSets === []) {
+        $html .= '<div class="empty">No custom country CIDR entries exist yet. Create <code>IR</code> here, paste the Iran CIDR list, and all GeoDNS rules using <code>IR</code> will match against this managed list after the next sync.</div>';
+        $html .= '</section>';
+        return $html;
+    }
+
+    $html .= '<div class="table-wrap"><table><thead><tr><th>Code</th><th>Name</th><th>CIDRs</th><th>Used By</th><th>Preview</th><th>Actions</th></tr></thead><tbody>';
+    foreach ($countryIpSets as $countryIpSet) {
+        $editPayload = htmlspecialchars(json_encode([
+            'country_code' => (string)$countryIpSet['country_code'],
+            'country_name' => (string)$countryIpSet['country_name'],
+            'cidrs' => implode("\n", $countryIpSet['cidrs']),
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        $previewCidrs = array_slice($countryIpSet['cidrs'], 0, 3);
+        $remaining = max(0, (int)$countryIpSet['cidr_count'] - count($previewCidrs));
+
+        $html .= '<tr>';
+        $html .= '<td><span class="type-chip">' . h((string)$countryIpSet['country_code']) . '</span></td>';
+        $html .= '<td><strong>' . h((string)$countryIpSet['country_name']) . '</strong></td>';
+        $html .= '<td>' . (int)$countryIpSet['cidr_count'] . '</td>';
+        $html .= '<td><span class="pill' . ((int)$countryIpSet['usage_count'] > 0 ? ' pill-success' : ' pill-muted') . '">' . (int)$countryIpSet['usage_count'] . ' rule(s)</span></td>';
+        $html .= '<td><div class="records">';
+        foreach ($previewCidrs as $cidr) {
+            $html .= '<div class="record-line mono">' . h((string)$cidr) . '</div>';
+        }
+        if ($remaining > 0) {
+            $html .= '<div class="surface-note">+' . $remaining . ' more CIDR range(s)</div>';
+        }
+        $html .= '</div></td>';
+        $html .= '<td><div class="action-stack">';
+        $html .= '<a class="btn btn-small btn-ghost" href="#" data-country-edit="' . $editPayload . '" onclick="fillCountryIpSetEditModal(this.dataset.countryEdit);openModal(\'countryIpSetEditModal\');return false;">Edit</a>';
+        if ((int)$countryIpSet['usage_count'] === 0) {
+            $html .= '<form method="post" data-async="workspace" onsubmit="return confirm(\'Delete this country CIDR database entry?\')">';
+            $html .= '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
+            $html .= '<input type="hidden" name="action" value="delete_country_ip_set">';
+            $html .= '<input type="hidden" name="country_db_original_code" value="' . h((string)$countryIpSet['country_code']) . '">';
+            $html .= '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
+            $html .= '</form>';
+        } else {
+            $html .= '<span class="surface-note">In use by active GeoDNS rules</span>';
+        }
+        $html .= '</div></td>';
+        $html .= '</tr>';
+    }
+    $html .= '</tbody></table></div>';
+    $html .= '</section>';
+
+    return $html;
+}
+
+function describeGeoRuleCountryMatcher(array $countryIpSetMap, array $countryCodes): string
+{
+    $customCodes = [];
+    $fallbackCodes = [];
+
+    foreach ($countryCodes as $countryCode) {
+        $countryCode = normalizeCountryCode((string)$countryCode);
+        $countryIpSet = $countryIpSetMap[$countryCode] ?? null;
+        if (is_array($countryIpSet) && ($countryIpSet['cidrs'] ?? []) !== []) {
+            $customCodes[] = $countryCode;
+            continue;
+        }
+        $fallbackCodes[] = $countryCode;
+    }
+
+    $parts = [];
+    if ($customCodes !== []) {
+        $parts[] = 'Custom CIDR DB: ' . implode(', ', $customCodes);
+    }
+    if ($fallbackCodes !== []) {
+        $parts[] = 'Backend GeoIP: ' . implode(', ', $fallbackCodes);
+    }
+
+    return $parts !== [] ? implode(' | ', $parts) : 'No matcher configured.';
+}
+
 function renderGeoRulesSection(array $config, array $zoneDetails, array $geoRules, bool $canModifyCurrentZone): string
 {
+    $countryIpSetMap = fetchCountryIpSetMap($config);
     $html = '<section class="panel">';
     $html .= '<div class="section-head">';
     $html .= '<div>';
@@ -2999,11 +3462,12 @@ function renderGeoRulesSection(array $config, array $zoneDetails, array $geoRule
         $healthLabel = $rule['health_check_port'] !== null
             ? 'TCP ' . (int)$rule['health_check_port'] . ' failover'
             : 'Off';
+        $countryMatcherSummary = describeGeoRuleCountryMatcher($countryIpSetMap, $rule['country_codes']);
 
         $html .= '<tr>';
         $html .= '<td><div class="mono">' . h((string)$rule['display_name']) . '</div></td>';
         $html .= '<td><span class="type-chip">' . h((string)$rule['record_type']) . '</span></td>';
-        $html .= '<td>' . h(implode(', ', $rule['country_codes'])) . '</td>';
+        $html .= '<td><div class="status-stack"><span>' . h(implode(', ', $rule['country_codes'])) . '</span><span class="small muted">' . h($countryMatcherSummary) . '</span></div></td>';
         $html .= '<td>' . renderPoolLines($rule['country_answers']) . '</td>';
         $html .= '<td>' . renderPoolLines($rule['default_answers']) . '</td>';
         $html .= '<td>' . h((string)$rule['ttl']) . '</td>';
@@ -3081,6 +3545,16 @@ function buildGeoAddModal(string $zoneName, array $config): string
 function buildGeoEditModal(string $zoneName): string
 {
     return '<div class="modal" id="geoEditModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoEditModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><input type="hidden" name="geo_rule_id" id="geo_edit_rule_id"><div class="grid-two"><div><label>Host</label><input class="input" id="geo_edit_name" name="geo_name" required></div><div><label>Answer type</label><select class="input" id="geo_edit_record_type" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" id="geo_edit_ttl" name="geo_ttl" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" id="geo_edit_country_codes" name="geo_country_codes" required></div></div><label>Matched pool</label><textarea class="textarea mono" id="geo_edit_country_answers" name="geo_country_answers" rows="5" required></textarea><label>Default pool</label><textarea class="textarea mono" id="geo_edit_default_answers" name="geo_default_answers" rows="5" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" id="geo_edit_health_check_port" name="geo_health_check_port" min="1" max="65535"></div><div><label>Behavior</label><div class="hint">Changing the hostname or answer type re-syncs the new LUA RRset and also cleans up the old location when needed.</div></div></div><label class="check-row"><input type="checkbox" id="geo_edit_enabled" name="geo_enabled" value="1"> Publish this rule immediately</label><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoEditModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save GeoDNS rule</button></div></form></div></div>';
+}
+
+function buildCountryIpSetAddModal(): string
+{
+    return '<div class="modal" id="countryIpSetAddModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>New country CIDR set</h3><button class="icon-btn" type="button" onclick="closeModal(\'countryIpSetAddModal\')">&times;</button></div><div class="modal-intro">Create a two-letter country code such as <code>IR</code>, then paste the CIDR list that should be used for GeoDNS matching. Saving this entry automatically re-syncs any GeoDNS rules already using that code.</div><form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_country_ip_set"><div class="grid-two"><div><label>Country code</label><input class="input mono" name="country_db_code" value="IR" maxlength="2" placeholder="IR" required></div><div><label>Display name</label><input class="input" name="country_db_name" value="Iran" placeholder="Iran"></div></div><label>CIDR ranges</label><textarea class="textarea mono" name="country_db_cidrs" rows="12" placeholder="5.52.0.0/14&#10;37.32.0.0/12" required></textarea><div class="hint">Use one CIDR per line. Plain IPs are also accepted and converted to host routes such as <code>/32</code> or <code>/128</code>.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'countryIpSetAddModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save country database</button></div></form></div></div>';
+}
+
+function buildCountryIpSetEditModal(): string
+{
+    return '<div class="modal" id="countryIpSetEditModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit country CIDR set</h3><button class="icon-btn" type="button" onclick="closeModal(\'countryIpSetEditModal\')">&times;</button></div><div class="modal-intro">Updating a country CIDR set automatically re-syncs every GeoDNS rule that references this code.</div><form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_country_ip_set"><input type="hidden" name="country_db_original_code" id="country_db_edit_original_code"><div class="grid-two"><div><label>Country code</label><input class="input mono" id="country_db_edit_code" name="country_db_code" maxlength="2" readonly required></div><div><label>Display name</label><input class="input" id="country_db_edit_name" name="country_db_name" placeholder="Iran"></div></div><label>CIDR ranges</label><textarea class="textarea mono" id="country_db_edit_cidrs" name="country_db_cidrs" rows="12" required></textarea><div class="hint">Keep one CIDR per line. Existing GeoDNS rules using this code will refresh after you save.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'countryIpSetEditModal\')">Cancel</button><button class="btn btn-primary" type="submit">Update country database</button></div></form></div></div>';
 }
 
 function manualRecordTypes(): array
@@ -3350,6 +3824,15 @@ function fillGeoEditModal(raw){
     document.getElementById('geo_edit_health_check_port').value=data.health_check_port||'';
     document.getElementById('geo_edit_enabled').checked=!!data.is_enabled;
   }catch(e){console.error(e);alert('Failed to load GeoDNS rule into editor.');}
+}
+function fillCountryIpSetEditModal(raw){
+  try{
+    const data=JSON.parse(raw);
+    document.getElementById('country_db_edit_original_code').value=data.country_code||'';
+    document.getElementById('country_db_edit_code').value=data.country_code||'';
+    document.getElementById('country_db_edit_name').value=data.country_name||'';
+    document.getElementById('country_db_edit_cidrs').value=data.cidrs||'';
+  }catch(e){console.error(e);alert('Failed to load country CIDR data into editor.');}
 }
 function workspaceElement(){return document.getElementById('workspaceContent');}
 function workspaceFlashElement(){return document.getElementById('workspaceFlash');}
