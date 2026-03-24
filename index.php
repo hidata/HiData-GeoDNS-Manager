@@ -50,6 +50,7 @@ session_set_cookie_params([
     'samesite' => 'Lax',
 ]);
 session_start();
+resolveUiLocale();
 enforceSessionTimeout($config);
 
 sendSecurityHeaders($config, $isHttps);
@@ -553,9 +554,13 @@ function enforceSessionTimeout(array $config): void
 
 function resetSession(): void
 {
+    $uiLocale = $_SESSION['ui_locale'] ?? null;
     session_unset();
     session_destroy();
     session_start();
+    if (is_string($uiLocale) && $uiLocale !== '') {
+        $_SESSION['ui_locale'] = $uiLocale;
+    }
 }
 
 function requireAuth(): void
@@ -573,36 +578,62 @@ function renderLoginPage(): never
     $flash = $_SESSION['flash'] ?? null;
     unset($_SESSION['flash']);
 
-    echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
+    $uiLocale = currentUiLocale();
+    $uiDir = currentUiDirection();
+
+    echo '<!doctype html><html lang="' . h($uiLocale) . '" dir="' . h($uiDir) . '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
     echo '<title>HiData</title>';
     echo '<style>' . baseCss() . loginCss() . '</style>';
     echo '</head><body class="login-body">';
     echo '<div class="login-shell">';
+    echo '<section class="login-showcase">';
     echo '<div class="login-brand">';
     echo '<div class="brand-mark">' . hidataLogoSvg('hidata-logo') . '</div>';
+    echo '<div>';
     echo '<div class="brand-title">HiData</div>';
+    echo '<p class="login-brand-copy">PowerDNS, GeoDNS, country match lists, and safer DNS operations in one modern control surface.</p>';
     echo '</div>';
-    echo '<div class="login-card">';
+    echo '</div>';
+    echo '<div class="login-showcase-card">';
+    echo '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('spark') . '</span> Modernized workspace</span>';
+    echo '<h1 class="login-title">A cleaner shell for busy DNS work.</h1>';
+    echo '<p class="login-copy">The panel now follows a sharper dashboard rhythm: stronger hierarchy, calmer cards, clearer actions, and space for language switching including فارسی.</p>';
+    echo '<div class="login-feature-list">';
+    echo '<div class="login-feature"><span class="feature-icon">' . uiIconSvg('globe') . '</span><div><strong>Zone-first navigation</strong><small>Move between domains, GeoDNS, and records without losing context.</small></div></div>';
+    echo '<div class="login-feature"><span class="feature-icon">' . uiIconSvg('map') . '</span><div><strong>Geo routing focus</strong><small>Country match rules and fallback pools are easier to read at a glance.</small></div></div>';
+    echo '<div class="login-feature"><span class="feature-icon">' . uiIconSvg('shield') . '</span><div><strong>Safer operations</strong><small>Read-only mode, sync actions, and destructive changes stay visually obvious.</small></div></div>';
+    echo '</div>';
+    echo '</div>';
+    echo '</section>';
+    echo '<section class="login-card">';
+    echo '<div class="login-card-head">';
+    echo '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('lock') . '</span> Secure access</span>';
+    echo '<h2>Sign in to continue</h2>';
+    echo '<p>Authenticate to manage zones, records, and country-aware DNS routing.</p>';
+    echo '</div>';
+    echo '<div class="login-toolbar">' . renderLanguageMenu() . '</div>';
     if ($flash) {
         echo renderFlash($flash);
     }
     if ($loginError) {
         echo '<div class="flash flash-danger">' . h((string)$loginError) . '</div>';
     }
-    echo '<form method="post" autocomplete="off">';
+    echo '<form method="post" autocomplete="off" class="login-form">';
     echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
     echo '<input type="hidden" name="action" value="login">';
     echo '<div class="field-shell">';
+    echo '<label for="login_username">Username</label>';
     echo '<span class="field-icon">' . uiIconSvg('user') . '</span>';
-    echo '<input class="input login-input" type="text" name="username" aria-label="Username" autocomplete="username" required autofocus>';
+    echo '<input class="input login-input" id="login_username" type="text" name="username" aria-label="Username" autocomplete="username" required autofocus>';
     echo '</div>';
     echo '<div class="field-shell">';
+    echo '<label for="login_password">Password</label>';
     echo '<span class="field-icon">' . uiIconSvg('lock') . '</span>';
-    echo '<input class="input login-input" type="password" name="password" aria-label="Password" autocomplete="current-password" required>';
+    echo '<input class="input login-input" id="login_password" type="password" name="password" aria-label="Password" autocomplete="current-password" required>';
     echo '</div>';
-    echo '<button class="btn btn-primary btn-block login-submit" type="submit" aria-label="Sign in">' . uiIconSvg('arrow-right', 'submit-icon') . '</button>';
+    echo '<button class="btn btn-primary btn-block login-submit" type="submit" aria-label="Sign in">' . uiIconSvg('arrow-right', 'submit-icon') . '<span>Sign in</span></button>';
     echo '</form>';
-    echo '</div></div></body></html>';
+    echo '</section></div></body></html>';
     exit;
 }
 
@@ -2937,6 +2968,29 @@ function uiIconSvg(string $icon, string $class = 'ui-icon'): string
         'user' => '<path d="M12 12a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm0 2c-3.59 0-6.5 1.79-6.5 4v1h13v-1c0-2.21-2.91-4-6.5-4Z" fill="currentColor"></path>',
         'lock' => '<path d="M8 10V8a4 4 0 1 1 8 0v2h1.25A1.75 1.75 0 0 1 19 11.75v5.5A1.75 1.75 0 0 1 17.25 19h-10.5A1.75 1.75 0 0 1 5 17.25v-5.5A1.75 1.75 0 0 1 6.75 10H8Zm2 0h4V8a2 2 0 1 0-4 0v2Z" fill="currentColor"></path>',
         'arrow-right' => '<path d="M5 12h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><path d="m11 7 5 5-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>',
+        'dashboard' => '<path d="M4.75 5.75h6.5v6.5h-6.5v-6.5Zm8 0h6.5v3.75h-6.5v-3.75Zm0 5.25h6.5v8.25h-6.5V11Zm-8 2.75h6.5v5.5h-6.5v-5.5Z" fill="currentColor"></path>',
+        'globe' => '<path d="M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17Zm5.87 7h-2.34a14.7 14.7 0 0 0-1.28-4.23a7.04 7.04 0 0 1 3.62 4.23ZM12 5.05c.6.87 1.57 2.72 2 5.45h-4c.43-2.73 1.4-4.58 2-5.45ZM9.75 6.27a14.7 14.7 0 0 0-1.28 4.23H6.13a7.04 7.04 0 0 1 3.62-4.23ZM6.13 13.5h2.34a14.7 14.7 0 0 0 1.28 4.23a7.04 7.04 0 0 1-3.62-4.23ZM12 18.95c-.6-.87-1.57-2.72-2-5.45h4c-.43 2.73-1.4 4.58-2 5.45Zm2.25-1.22a14.7 14.7 0 0 0 1.28-4.23h2.34a7.04 7.04 0 0 1-3.62 4.23Z" fill="currentColor"></path>',
+        'database' => '<ellipse cx="12" cy="6" rx="6.5" ry="2.5" fill="currentColor"></ellipse><path d="M5.5 6v4c0 1.38 2.91 2.5 6.5 2.5s6.5-1.12 6.5-2.5V6" stroke="currentColor" stroke-width="1.8"></path><path d="M5.5 10v4c0 1.38 2.91 2.5 6.5 2.5s6.5-1.12 6.5-2.5v-4" stroke="currentColor" stroke-width="1.8"></path><path d="M5.5 14v4c0 1.38 2.91 2.5 6.5 2.5s6.5-1.12 6.5-2.5v-4" stroke="currentColor" stroke-width="1.8"></path>',
+        'map' => '<path d="M9 4.75 4.75 6.5v12.75L9 17.5l6 1.75 4.25-1.75V4.75L15 6.5 9 4.75Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><path d="M9 4.75v12.75M15 6.5v12.75" stroke="currentColor" stroke-width="1.8"></path>',
+        'records' => '<path d="M5.5 6.75A1.75 1.75 0 0 1 7.25 5h9.5a1.75 1.75 0 0 1 1.75 1.75v10.5A1.75 1.75 0 0 1 16.75 19h-9.5A1.75 1.75 0 0 1 5.5 17.25V6.75Z" stroke="currentColor" stroke-width="1.8"></path><path d="M8.5 9h7M8.5 12h7M8.5 15h4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>',
+        'server' => '<rect x="5" y="4.5" width="14" height="6" rx="2" stroke="currentColor" stroke-width="1.8"></rect><rect x="5" y="13.5" width="14" height="6" rx="2" stroke="currentColor" stroke-width="1.8"></rect><circle cx="8.5" cy="7.5" r="1" fill="currentColor"></circle><circle cx="8.5" cy="16.5" r="1" fill="currentColor"></circle><path d="M12 7.5h4M12 16.5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>',
+        'shield' => '<path d="M12 3.8 6.5 6v4.77c0 3.57 2.22 6.84 5.5 8.23 3.28-1.39 5.5-4.66 5.5-8.23V6L12 3.8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><path d="m9.5 11.9 1.65 1.65 3.35-3.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>',
+        'search' => '<circle cx="11" cy="11" r="5.5" stroke="currentColor" stroke-width="1.8"></circle><path d="m15.2 15.2 3.3 3.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>',
+        'plus' => '<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>',
+        'upload' => '<path d="M12 16V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path><path d="m8.5 9.5 3.5-3.5 3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><path d="M5 18.5h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>',
+        'download' => '<path d="M12 6v10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path><path d="m15.5 12.5-3.5 3.5-3.5-3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><path d="M5 18.5h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>',
+        'sync' => '<path d="M19 8a6.9 6.9 0 0 0-12.3-2.15M5 16a6.9 6.9 0 0 0 12.3 2.15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path><path d="m19 4.5.5 4.5-4.5-.5M5 19.5l-.5-4.5 4.5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>',
+        'logout' => '<path d="M10.5 5.5H8a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path><path d="M13 16.5 18 12l-5-4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><path d="M18 12H9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>',
+        'chevron-down' => '<path d="m7 10 5 5 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>',
+        'spark' => '<path d="m12 3 1.65 5.1L19 9.75l-5.35 1.65L12 16.5l-1.65-5.1L5 9.75l5.35-1.65L12 3Z" fill="currentColor"></path><path d="m18.5 15 .72 2.22L21.5 18l-2.28.78L18.5 21l-.72-2.22L15.5 18l2.28-.78L18.5 15ZM5.5 14l.55 1.7L7.75 16l-1.7.3L5.5 18l-.55-1.7L3.25 16l1.7-.3L5.5 14Z" fill="currentColor"></path>',
+        'menu' => '<path d="M5 7h14M5 12h14M5 17h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>',
+        'edit' => '<path d="m6 16.75 8.85-8.85 2.25 2.25L8.25 19H6v-2.25Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><path d="m13.75 7 2.25-2.25 2.25 2.25L16 9.25" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path>',
+        'trash' => '<path d="M5.5 7h13M9.5 7V5.5h5V7M8.5 10.5v5M12 10.5v5M15.5 10.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path><path d="M7.5 7h9l-.65 10.1a1.75 1.75 0 0 1-1.75 1.64h-4.2a1.75 1.75 0 0 1-1.75-1.64L7.5 7Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path>',
+        'check' => '<path d="m5.5 12.5 4.2 4.2L18.5 7.9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>',
+        'alert' => '<path d="M12 4.5 4.75 18h14.5L12 4.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><path d="M12 9v4.5M12 16.2h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>',
+        'layers' => '<path d="m12 4 7.5 4-7.5 4-7.5-4L12 4Zm0 8 7.5 4-7.5 4-7.5-4 7.5-4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path>',
+        'code' => '<path d="m9 8-4 4 4 4M15 8l4 4-4 4M13.2 6 10.8 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>',
+        'close' => '<path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>',
         default => '',
     };
 
@@ -3001,21 +3055,179 @@ function canRectifyZone(array $config, ?array $zone): bool
     }
 }
 
+function uiLocaleOptions(): array
+{
+    return [
+        'en' => ['label' => 'English (UK)', 'native' => 'English', 'short' => 'EN', 'dir' => 'ltr', 'country' => 'GB'],
+        'zh' => ['label' => 'Chinese', 'native' => '中文', 'short' => '中文', 'dir' => 'ltr', 'country' => 'CN'],
+        'fr' => ['label' => 'French', 'native' => 'français', 'short' => 'FR', 'dir' => 'ltr', 'country' => 'FR'],
+        'ar' => ['label' => 'Arabic', 'native' => 'العربية', 'short' => 'AR', 'dir' => 'rtl', 'country' => 'SA'],
+        'fa' => ['label' => 'Persian', 'native' => 'فارسی', 'short' => 'FA', 'dir' => 'rtl', 'country' => 'IR'],
+    ];
+}
+
+function resolveUiLocale(): string
+{
+    $locales = uiLocaleOptions();
+    $requested = strtolower(trim((string)($_GET['lang'] ?? '')));
+    if ($requested !== '' && isset($locales[$requested])) {
+        $_SESSION['ui_locale'] = $requested;
+    }
+
+    $locale = strtolower(trim((string)($_SESSION['ui_locale'] ?? 'en')));
+    if (!isset($locales[$locale])) {
+        $locale = 'en';
+        $_SESSION['ui_locale'] = $locale;
+    }
+
+    return $locale;
+}
+
+function currentUiLocale(): string
+{
+    $locale = strtolower(trim((string)($_SESSION['ui_locale'] ?? 'en')));
+    return array_key_exists($locale, uiLocaleOptions()) ? $locale : 'en';
+}
+
+function currentUiLocaleMeta(?string $locale = null): array
+{
+    $locales = uiLocaleOptions();
+    $locale = $locale ?? currentUiLocale();
+    return $locales[$locale] ?? $locales['en'];
+}
+
+function currentUiDirection(): string
+{
+    return (string)(currentUiLocaleMeta()['dir'] ?? 'ltr');
+}
+
+function currentPageUrl(array $overrides = [], array $remove = ['partial']): string
+{
+    $params = $_GET;
+    foreach ($remove as $key) {
+        unset($params[$key]);
+    }
+    foreach ($overrides as $key => $value) {
+        if ($value === null || $value === '') {
+            unset($params[$key]);
+            continue;
+        }
+        $params[$key] = $value;
+    }
+
+    $query = http_build_query($params);
+    return 'index.php' . ($query !== '' ? '?' . $query : '');
+}
+
+function countryFlagEmoji(string $countryCode): string
+{
+    $countryCode = strtoupper((string)preg_replace('/[^A-Za-z]/', '', $countryCode));
+    if (strlen($countryCode) !== 2 || !function_exists('mb_chr')) {
+        return '';
+    }
+
+    $base = 0x1F1E6;
+    $first = $base + ord($countryCode[0]) - 65;
+    $second = $base + ord($countryCode[1]) - 65;
+
+    return mb_chr($first, 'UTF-8') . mb_chr($second, 'UTF-8');
+}
+
+function renderMetricCard(string $icon, string $label, string $value, string $note, string $tone = 'tone-blue'): string
+{
+    return '<article class="metric-card ' . h($tone) . '">'
+        . '<div class="metric-card-top"><span class="metric-icon">' . uiIconSvg($icon) . '</span><span class="metric-label">' . h($label) . '</span></div>'
+        . '<strong class="metric-value">' . h($value) . '</strong>'
+        . '<small class="metric-note">' . h($note) . '</small>'
+        . '</article>';
+}
+
+function renderCountryChipList(array $countryCodes): string
+{
+    if ($countryCodes === []) {
+        return '<span class="small muted">No countries</span>';
+    }
+
+    $html = '<div class="country-chip-list">';
+    foreach ($countryCodes as $countryCode) {
+        $normalized = normalizeCountryCode((string)$countryCode);
+        $flag = countryFlagEmoji($normalized);
+        $html .= '<span class="country-chip"><span class="flag-emoji">' . h($flag !== '' ? $flag : '??') . '</span><span>' . h($normalized) . '</span></span>';
+    }
+    $html .= '</div>';
+
+    return $html;
+}
+
+function renderLanguageMenu(): string
+{
+    $currentLocale = currentUiLocale();
+    $current = currentUiLocaleMeta($currentLocale);
+    $currentFlag = countryFlagEmoji((string)$current['country']);
+
+    $html = '<details class="menu-dropdown header-menu">';
+    $html .= '<summary class="menu-trigger" aria-label="Language selector">';
+    $html .= '<span class="flag-emoji">' . h($currentFlag !== '' ? $currentFlag : '??') . '</span>';
+    $html .= '<span class="menu-trigger-text">' . h((string)$current['native']) . '</span>';
+    $html .= uiIconSvg('chevron-down', 'menu-caret');
+    $html .= '</summary>';
+    $html .= '<div class="menu-card"><div class="menu-label">Languages</div>';
+
+    foreach (uiLocaleOptions() as $locale => $meta) {
+        $flag = countryFlagEmoji((string)$meta['country']);
+        $active = $locale === $currentLocale ? ' is-active' : '';
+        $html .= '<a class="menu-item language-item' . $active . '" href="' . h(currentPageUrl(['lang' => $locale])) . '">';
+        $html .= '<span class="flag-emoji">' . h($flag !== '' ? $flag : '??') . '</span>';
+        $html .= '<span class="menu-item-copy"><strong>' . h((string)$meta['native']) . '</strong><small>' . h((string)$meta['label']) . '</small></span>';
+        if ($locale === $currentLocale) {
+            $html .= '<span class="menu-check">' . uiIconSvg('check', 'ui-icon') . '</span>';
+        }
+        $html .= '</a>';
+    }
+
+    $html .= '</div></details>';
+
+    return $html;
+}
+
+function renderProfileMenu(array $config, ?array $currentZone): string
+{
+    $username = (string)($_SESSION['auth']['username'] ?? 'admin');
+    $locale = currentUiLocaleMeta();
+    $initial = strtoupper(substr($username, 0, 1));
+    $mode = ($config['features']['read_only'] ?? false) ? 'Read only' : 'Live write';
+    $zoneLabel = $currentZone ? rtrim((string)$currentZone['name'], '.') : 'No zone selected';
+
+    $html = '<details class="menu-dropdown header-menu profile-menu">';
+    $html .= '<summary class="menu-trigger profile-trigger" aria-label="Open profile menu">';
+    $html .= '<span class="user-avatar">' . h($initial !== '' ? $initial : 'A') . '</span>';
+    $html .= '<span class="profile-trigger-copy"><strong>' . h($username) . '</strong><small>' . h($mode) . '</small></span>';
+    $html .= uiIconSvg('chevron-down', 'menu-caret');
+    $html .= '</summary>';
+    $html .= '<div class="menu-card profile-card">';
+    $html .= '<div class="menu-label">Workspace</div>';
+    $html .= '<div class="menu-row"><span>Zone</span><strong>' . h($zoneLabel) . '</strong></div>';
+    $html .= '<div class="menu-row"><span>Language</span><strong>' . h((string)$locale['native']) . '</strong></div>';
+    $html .= '<div class="menu-row"><span>Mode</span><strong>' . h($mode) . '</strong></div>';
+    $html .= '<form method="post" class="menu-form">';
+    $html .= '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
+    $html .= '<input type="hidden" name="action" value="logout">';
+    $html .= '<button class="btn btn-ghost btn-block" type="submit">' . uiIconSvg('logout', 'btn-icon') . '<span>Sign out</span></button>';
+    $html .= '</form>';
+    $html .= '</div></details>';
+
+    return $html;
+}
+
 function renderPage(array $data): void
 {
     $config = $data['config'];
     $zones = $data['zones'];
     $zoneSearch = $data['zoneSearch'];
     $currentZone = $data['currentZone'];
-    $zoneDetails = $data['zoneDetails'];
-    $geoRules = $data['geoRules'];
-    $geoRuleGroups = $data['geoRuleGroups'];
-    $geoRuleStats = $data['geoRuleStats'];
-    $countryIpSets = $data['countryIpSets'];
-    $countryIpSetStats = $data['countryIpSetStats'];
-    $rrsets = $data['rrsets'];
-    $recordFilter = $data['recordFilter'];
     $currentZoneDisplayName = $currentZone ? rtrim((string)$currentZone['name'], '.') : '';
+    $uiLocale = currentUiLocale();
+    $uiDir = currentUiDirection();
 
     $filteredZones = array_values(array_filter($zones, static function ($zone) use ($zoneSearch) {
         if ($zoneSearch === '') {
@@ -3024,58 +3236,91 @@ function renderPage(array $data): void
         return mb_stripos((string)($zone['name'] ?? ''), $zoneSearch) !== false;
     }));
 
-    $zoneCount = count($zones);
-    $rrsetCount = count($rrsets);
-    $recordCount = 0;
-    foreach ($rrsets as $rrset) {
-        $recordCount += count($rrset['records'] ?? []);
-    }
-    $nameserverCount = 0;
-    foreach (($zoneDetails['nameservers'] ?? []) as $nameserver) {
-        if (trim((string)$nameserver) !== '') {
-            $nameserverCount++;
-        }
-    }
-
     $canCreateZones = canCreateZones($config);
-    $canDeleteCurrentZone = canDeleteZones($config) && canModifyZone($config, $zoneDetails);
-    $canModifyCurrentZone = canModifyZone($config, $zoneDetails);
-    $canRectifyCurrentZone = canRectifyZone($config, $zoneDetails);
 
-    echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
+    echo '<!doctype html><html lang="' . h($uiLocale) . '" dir="' . h($uiDir) . '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
     echo '<title>' . h((string)($config['app']['name'] ?? 'HiData GeoDNS Manager')) . '</title>';
     echo '<style>' . baseCss() . appCss() . '</style>';
-    echo '</head><body>';
+    echo '</head><body class="app-body">';
     echo '<div class="layout">';
     echo '<aside class="sidebar">';
+    echo '<div class="sidebar-panel sidebar-brand-panel">';
     echo '<div class="brand">';
     echo '<div class="brand-logo">' . hidataLogoSvg('hidata-logo') . '</div>';
     echo '<div><div class="brand-name">HiData</div>';
-    echo '<div class="brand-tag">Domain and GeoDNS manager</div></div>';
+    echo '<div class="brand-tag">Modernized GeoDNS manager</div></div>';
+    echo '</div>';
+    echo '<div class="sidebar-hero-copy">';
+    echo '<span class="sidebar-kicker">Control Surface</span>';
+    echo '<p>' . ($currentZone
+        ? 'Focused on <strong>' . h($currentZoneDisplayName) . '</strong>. Jump between GeoDNS, records, and country matching from one shell.'
+        : 'Browse every domain, keep custom country match lists tidy, and manage DNS workflows from a cleaner admin shell.') . '</p>';
+    echo '</div>';
     echo '</div>';
 
+    echo '<nav class="sidebar-panel sidebar-nav-card">';
+    echo '<div class="sidebar-section-title">Workspace</div>';
+    echo '<a class="shell-nav-link" href="#workspace-start"><span class="shell-nav-icon">' . uiIconSvg('dashboard') . '</span><span>Overview</span></a>';
+    if ($currentZone) {
+        echo '<a class="shell-nav-link" href="#geo-rules"><span class="shell-nav-icon">' . uiIconSvg('map') . '</span><span>GeoDNS Rules</span></a>';
+        echo '<a class="shell-nav-link" href="#records"><span class="shell-nav-icon">' . uiIconSvg('records') . '</span><span>Records</span></a>';
+    }
+    echo '<a class="shell-nav-link" href="#country-cidr"><span class="shell-nav-icon">' . uiIconSvg('database') . '</span><span>Country CIDR DB</span></a>';
+    echo '</nav>';
+
+    echo '<div class="sidebar-panel sidebar-search-card">';
+    echo '<div class="sidebar-section-title">Domain Search</div>';
     echo '<form class="search-form" method="get">';
     if ($currentZone) {
         echo '<input type="hidden" name="zone" value="' . h(rtrim((string)$currentZone['name'], '.')) . '">';
     }
-    echo '<label class="label">Domain search</label>';
-    echo '<input class="input" type="text" name="zone_search" value="' . h($zoneSearch) . '" placeholder="Search domains...">';
+    echo '<input type="hidden" name="lang" value="' . h($uiLocale) . '">';
+    echo '<div class="search-input-shell">';
+    echo '<span class="input-icon">' . uiIconSvg('search') . '</span>';
+    echo '<input class="input toolbar-input" type="text" name="zone_search" value="' . h($zoneSearch) . '" placeholder="Search domains...">';
+    echo '</div>';
     echo '</form>';
+    echo '</div>';
 
+    echo '<div class="sidebar-panel sidebar-domain-panel">';
     echo '<div class="sidebar-section-title">Domains <span class="badge">' . count($filteredZones) . '</span></div>';
     echo '<div class="zone-list">';
     foreach ($filteredZones as $zone) {
         $active = $currentZone && $currentZone['name'] === $zone['name'] ? ' active' : '';
-        echo '<a class="zone-item' . $active . '" href="?zone=' . urlencode(rtrim((string)$zone['name'], '.')) . '">';
+        echo '<a class="zone-item' . $active . '" href="' . h(currentPageUrl([
+            'zone' => rtrim((string)$zone['name'], '.'),
+            'record_filter' => null,
+        ])) . '">';
         echo '<span class="zone-name">' . h(rtrim((string)$zone['name'], '.')) . '</span>';
-        echo '<span class="zone-meta">Project ' . h((string)($zone['kind'] ?? 'Unknown')) . '</span>';
+        echo '<span class="zone-meta"><span class="zone-meta-icon">' . uiIconSvg('layers', 'zone-icon') . '</span>Project ' . h((string)($zone['kind'] ?? 'Unknown')) . '</span>';
         echo '</a>';
     }
     if ($filteredZones === []) {
         echo '<div class="empty small">No domains found.</div>';
     }
     echo '</div>';
+    echo '</div>';
 
+    echo '</aside>';
+    echo '<div class="app-stage">';
+    echo '<header class="app-header">';
+    echo '<div class="app-header-copy">';
+    echo '<span class="app-kicker">HiData GeoDNS Manager</span>';
+    echo '<h1>' . ($currentZone ? h($currentZoneDisplayName) : 'Modern DNS dashboard') . '</h1>';
+    echo '<p>' . ($currentZone
+        ? 'Everything for this domain lives below: RRsets, GeoDNS routing, imports, exports, rectify, and country-based matcher data.'
+        : 'Use the refreshed panel to create zones, browse domains, and keep the country CIDR database ready for GeoDNS routing.') . '</p>';
+    echo '</div>';
+    echo '<div class="app-header-actions">';
+    if ($canCreateZones) {
+        echo '<a class="btn btn-primary" href="#" onclick="openModal(\'zoneCreateModal\');return false;">' . uiIconSvg('plus', 'btn-icon') . '<span>New domain</span></a>';
+    }
+    echo renderLanguageMenu();
+    echo renderProfileMenu($config, $currentZone);
+    echo '</div>';
+    echo '</header>';
+
+    echo '<main class="content" id="workspaceContent">' . renderWorkspaceContent($data) . '</main>';
     echo '<div class="config-box">';
     echo '<div class="config-row"><span>API endpoint</span><strong>' . h((string)($config['pdns']['base_url'] ?? '')) . '</strong></div>';
     echo '<div class="config-row"><span>Server ID</span><strong>' . h((string)($config['pdns']['server_id'] ?? '')) . '</strong></div>';
@@ -3083,9 +3328,7 @@ function renderPage(array $data): void
     echo '<div class="config-row"><span>Client IP</span><strong>' . h(clientIp($config)) . '</strong></div>';
     echo '<div class="config-row"><span>Mode</span><strong>' . (($config['features']['read_only'] ?? false) ? 'Read-only' : 'Read / Write') . '</strong></div>';
     echo '</div>';
-
-    echo '</aside>';
-    echo '<main class="content" id="workspaceContent">' . renderWorkspaceContent($data) . '</main>';
+    echo '</div>';
     echo '</div>';
     echo modalScripts();
     echo '</body></html>';
@@ -3123,88 +3366,82 @@ function renderWorkspaceContent(array $data): string
     $canDeleteCurrentZone = canDeleteZones($config) && canModifyZone($config, $zoneDetails);
     $canModifyCurrentZone = canModifyZone($config, $zoneDetails);
     $canRectifyCurrentZone = canRectifyZone($config, $zoneDetails);
+    $canManageCountryDb = ($config['features']['read_only'] ?? false) !== true;
     $bulkFormId = 'bulkDeleteRrsetsForm';
+    $uiLocale = currentUiLocale();
 
     ob_start();
 
     echo '<div id="workspaceFlash" class="flash-mount">' . renderFlash($data['flash'] ?? null) . '</div>';
 
-    echo '<section class="panel workspace-topbar">';
-    echo '<div class="workspace-title-group">';
-    echo '<div class="eyebrow">HiData DNS Workspace</div>';
-    echo '<h1 class="page-title">' . ($currentZone ? h($currentZoneDisplayName) : 'Domain Projects') . '</h1>';
-    echo '<p class="workspace-copy">' . ($currentZone
-        ? 'Manage RRsets, imports, and GeoDNS behavior without leaving the current workspace.'
-        : 'Create your first domain project, then manage records and GeoDNS from one cleaner control surface.') . '</p>';
-    echo '</div>';
-    echo '<div class="top-actions">';
-    if ($canCreateZones) {
-        echo '<a class="btn btn-primary" href="#" onclick="openModal(\'zoneCreateModal\');return false;">New domain</a>';
-    }
-    echo '<span class="user-chip">' . h((string)($_SESSION['auth']['username'] ?? 'admin')) . '</span>';
-    echo '<form method="post" class="inline-form">';
-    echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
-    echo '<input type="hidden" name="action" value="logout">';
-    echo '<button class="btn btn-ghost" type="submit">Sign out</button>';
-    echo '</form>';
-    echo '</div>';
-    echo '</section>';
-
-    echo renderCountryIpDatabaseSection($countryIpSets, $countryIpSetStats);
-
     if (!$currentZone || !$zoneDetails) {
-        echo '<section class="panel hero hero-panel">';
+        echo '<section class="panel workspace-hero hero-panel" id="workspace-start">';
         echo '<div class="hero-copy">';
-        echo '<span class="section-kicker">Starter workspace</span>';
-        echo '<h2>Create the main domain first, then manage records inside that domain project.</h2>';
-        echo '<p>Start with a domain like <code>hidata.org</code>. After that, open the project to add root records, subdomains, bulk changes, imports, and GeoDNS rules in one place.</p>';
+        echo '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('dashboard') . '</span> Starter workspace</span>';
+        echo '<h2 class="hero-heading">Create the main domain first, then manage records, GeoDNS, and country matching from here.</h2>';
+        echo '<p class="hero-text">This redesign keeps the existing PHP logic intact, but gives you a calmer dashboard shell with stronger hierarchy, softer cards, icon-led actions, and a proper language menu that now includes فارسی.</p>';
+        echo '<div class="hero-feature-list">';
+        echo '<div class="hero-feature"><span class="feature-icon">' . uiIconSvg('globe') . '</span><div><strong>Zone inventory</strong><small>Browse every domain from the left rail and jump straight into the workspace.</small></div></div>';
+        echo '<div class="hero-feature"><span class="feature-icon">' . uiIconSvg('map') . '</span><div><strong>GeoDNS focus</strong><small>Country pools, health checks, and sync state are easier to scan.</small></div></div>';
+        echo '<div class="hero-feature"><span class="feature-icon">' . uiIconSvg('database') . '</span><div><strong>Country matcher DB</strong><small>Custom CIDR entries stay visible even before a domain is selected.</small></div></div>';
         echo '</div>';
-        echo '<div class="hero-grid">';
-        echo '<div class="stat-card stat-card-accent"><span>Domains</span><strong>' . $zoneCount . '</strong><small>Main domain projects</small></div>';
-        echo '<div class="stat-card"><span>Geo Rules</span><strong>' . (int)($geoRuleStats['total_rules'] ?? 0) . '</strong><small>Stored across all domains</small></div>';
-        echo '<div class="stat-card"><span>Geo Active</span><strong>' . (int)($geoRuleStats['enabled_rules'] ?? 0) . '</strong><small>Published to PowerDNS</small></div>';
-        echo '<div class="stat-card"><span>Mode</span><strong>' . (($config['features']['read_only'] ?? false) ? 'Read only' : 'Live write') . '</strong><small>Backups ' . (($config['features']['backup_before_write'] ?? false) ? 'enabled' : 'disabled') . '</small></div>';
+        echo '</div>';
+        echo '<div class="hero-side">';
+        echo renderMetricCard('globe', 'Domains', (string)$zoneCount, 'Main domain projects managed here', 'tone-blue');
+        echo renderMetricCard('map', 'GeoDNS Rules', (string)(int)($geoRuleStats['total_rules'] ?? 0), 'Stored across all domains', 'tone-sky');
+        echo renderMetricCard('database', 'CIDR Countries', (string)(int)($countryIpSetStats['country_count'] ?? 0), 'Custom matcher entries available', 'tone-gold');
+        echo renderMetricCard('shield', 'Mode', ($config['features']['read_only'] ?? false) ? 'Read only' : 'Live write', 'Backups ' . (($config['features']['backup_before_write'] ?? false) ? 'enabled' : 'disabled'), 'tone-emerald');
         echo '</div>';
         echo '</section>';
+
+        echo renderCountryIpDatabaseSection($countryIpSets, $countryIpSetStats, $canManageCountryDb);
+
         if ($canCreateZones) {
             echo buildCreateZoneModal();
         }
-        echo buildCountryIpSetAddModal();
-        echo buildCountryIpSetEditModal();
+        if ($canManageCountryDb) {
+            echo buildCountryIpSetAddModal();
+            echo buildCountryIpSetEditModal();
+        }
 
         return (string)ob_get_clean();
     }
 
-    echo '<section class="panel zone-header zone-hero">';
-    echo '<div class="zone-title-wrap">';
-    echo '<span class="section-kicker">Active domain</span>';
-    echo '<div class="zone-title">' . h($currentZoneDisplayName) . '</div>';
-    echo '<div class="zone-subtitle">Serial ' . h((string)($zoneDetails['serial'] ?? '-')) . ' | Edited serial ' . h((string)($zoneDetails['edited_serial'] ?? '-')) . ' | Root host available as <code>@</code></div>';
+    echo '<section class="panel workspace-hero zone-hero" id="workspace-start">';
+    echo '<div class="hero-copy">';
+    echo '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('globe') . '</span> Active domain workspace</span>';
+    echo '<h2 class="hero-heading">' . h($currentZoneDisplayName) . '</h2>';
+    echo '<p class="hero-text">Manage authoritative records, GeoDNS answers, imports, exports, rectify operations, and country-aware match data without leaving this domain workspace.</p>';
+    echo '<div class="hero-badge-row">';
+    echo '<span class="pill">' . uiIconSvg('layers', 'badge-icon') . '<span>Type ' . h((string)($zoneDetails['kind'] ?? 'Unknown')) . '</span></span>';
+    echo '<span class="pill">' . uiIconSvg('shield', 'badge-icon') . '<span>DNSSEC ' . (!empty($zoneDetails['dnssec']) ? 'On' : 'Off') . '</span></span>';
+    echo '<span class="pill">' . uiIconSvg('sync', 'badge-icon') . '<span>API Rectify ' . (!empty($zoneDetails['api_rectify']) ? 'On' : 'Off') . '</span></span>';
+    echo '<span class="pill">' . uiIconSvg('code', 'badge-icon') . '<span>Serial ' . h((string)($zoneDetails['serial'] ?? '-')) . '</span></span>';
     echo '</div>';
-    echo '<div class="zone-badges">';
-    echo '<span class="pill">Type ' . h((string)($zoneDetails['kind'] ?? 'Unknown')) . '</span>';
-    echo '<span class="pill">DNSSEC ' . (!empty($zoneDetails['dnssec']) ? 'On' : 'Off') . '</span>';
-    echo '<span class="pill">API Rectify ' . (!empty($zoneDetails['api_rectify']) ? 'On' : 'Off') . '</span>';
+    echo '<div class="hero-note">Edited serial ' . h((string)($zoneDetails['edited_serial'] ?? '-')) . '. Use <code>@</code> whenever you mean the root host of this zone.</div>';
     echo '</div>';
-    echo '<div class="zone-actions">';
+    echo '<div class="hero-actions">';
     if ($canModifyCurrentZone) {
-        echo '<a class="btn btn-primary" href="#" onclick="openModal(\'geoAddModal\');return false;">New Geo rule</a>';
-        echo '<a class="btn btn-ghost" href="#" onclick="openModal(\'addModal\');return false;">Add record</a>';
-        echo '<a class="btn btn-ghost" href="#" onclick="openModal(\'importModal\');return false;">Import zone text</a>';
+        echo '<a class="btn btn-primary" href="#" onclick="openModal(\'geoAddModal\');return false;">' . uiIconSvg('plus', 'btn-icon') . '<span>New Geo rule</span></a>';
+        echo '<a class="btn btn-ghost" href="#" onclick="openModal(\'addModal\');return false;">' . uiIconSvg('plus', 'btn-icon') . '<span>Add record</span></a>';
+        echo '<a class="btn btn-ghost" href="#" onclick="openModal(\'importModal\');return false;">' . uiIconSvg('upload', 'btn-icon') . '<span>Import zone text</span></a>';
         echo '<form method="post" class="inline-form" data-async="workspace">';
         echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
         echo '<input type="hidden" name="action" value="sync_geo_zone">';
         echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
-        echo '<button class="btn btn-ghost" type="submit">Sync GeoDNS</button>';
+        echo '<button class="btn btn-ghost" type="submit">' . uiIconSvg('sync', 'btn-icon') . '<span>Sync GeoDNS</span></button>';
         echo '</form>';
     }
-    echo '<a class="btn btn-ghost" href="?download=zone&amp;zone=' . urlencode(rtrim((string)$zoneDetails['name'], '.')) . '">Export domain</a>';
+    echo '<a class="btn btn-ghost" href="' . h(currentPageUrl([
+        'download' => 'zone',
+        'zone' => rtrim((string)$zoneDetails['name'], '.'),
+    ])) . '">' . uiIconSvg('download', 'btn-icon') . '<span>Export domain</span></a>';
     if ($canRectifyCurrentZone) {
         echo '<form method="post" class="inline-form" data-async="workspace" onsubmit="return confirm(\'Rectify this domain now?\')">';
         echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
         echo '<input type="hidden" name="action" value="rectify_zone">';
         echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
-        echo '<button class="btn btn-ghost" type="submit">Rectify</button>';
+        echo '<button class="btn btn-ghost" type="submit">' . uiIconSvg('sync', 'btn-icon') . '<span>Rectify</span></button>';
         echo '</form>';
     }
     if ($canDeleteCurrentZone) {
@@ -3212,25 +3449,31 @@ function renderWorkspaceContent(array $data): string
         echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
         echo '<input type="hidden" name="action" value="delete_zone">';
         echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
-        echo '<button class="btn btn-danger" type="submit">Delete domain</button>';
+        echo '<button class="btn btn-danger" type="submit">' . uiIconSvg('trash', 'btn-icon') . '<span>Delete domain</span></button>';
         echo '</form>';
     }
     echo '</div>';
     echo '</section>';
 
+    echo '<div class="jump-grid">';
+    echo '<a class="jump-chip" href="#geo-rules"><span class="jump-chip-icon">' . uiIconSvg('map') . '</span><span>GeoDNS</span></a>';
+    echo '<a class="jump-chip" href="#records"><span class="jump-chip-icon">' . uiIconSvg('records') . '</span><span>Records</span></a>';
+    echo '<a class="jump-chip" href="#country-cidr"><span class="jump-chip-icon">' . uiIconSvg('database') . '</span><span>Country DB</span></a>';
+    echo '</div>';
+
     echo '<section class="metric-grid">';
-    echo '<article class="stat-card stat-card-accent"><span>Root</span><strong>' . h($currentZoneDisplayName) . '</strong><small>Use <code>@</code> for the root host in this domain.</small></article>';
-    echo '<article class="stat-card"><span>RRsets</span><strong>' . $rrsetCount . '</strong><small>' . $recordCount . ' record values currently visible</small></article>';
-    echo '<article class="stat-card"><span>GeoDNS</span><strong>' . count($geoRules) . '</strong><small>Country-based answers in this domain</small></article>';
-    echo '<article class="stat-card"><span>Nameservers</span><strong>' . $nameserverCount . '</strong><small>Authority hosts attached to the domain</small></article>';
+    echo renderMetricCard('records', 'RRsets', (string)$rrsetCount, $recordCount . ' record values currently visible', 'tone-blue');
+    echo renderMetricCard('map', 'GeoDNS', (string)count($geoRules), 'Country-based answers in this domain', 'tone-sky');
+    echo renderMetricCard('server', 'Nameservers', (string)$nameserverCount, 'Authority hosts attached to the domain', 'tone-gold');
+    echo renderMetricCard('shield', 'Write Mode', ($config['features']['read_only'] ?? false) ? 'Read only' : 'Writable', 'Backups ' . (($config['features']['backup_before_write'] ?? false) ? 'enabled' : 'disabled'), 'tone-emerald');
     echo '</section>';
 
     echo renderGeoRulesSection($config, $zoneDetails, $geoRules, $canModifyCurrentZone);
 
-    echo '<section class="panel records-panel">';
+    echo '<section class="panel records-panel section-panel" id="records">';
     echo '<div class="section-head">';
     echo '<div>';
-    echo '<span class="section-kicker">RRset manager</span>';
+    echo '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('records') . '</span> RRset manager</span>';
     echo '<h2 class="section-title">Records</h2>';
     echo '<p class="section-copy">Filter large zones quickly, select multiple rows, and update or remove RRsets without reloading the whole page.</p>';
     echo '</div>';
@@ -3240,8 +3483,12 @@ function renderWorkspaceContent(array $data): string
     echo '<div class="table-toolbar">';
     echo '<form method="get" class="toolbar-form">';
     echo '<input type="hidden" name="zone" value="' . h(rtrim((string)$zoneDetails['name'], '.')) . '">';
-    echo '<input class="input" type="text" name="record_filter" value="' . h($recordFilter) . '" placeholder="Search hosts, types, or values...">';
-    echo '<button class="btn btn-ghost" type="submit">Filter</button>';
+    echo '<input type="hidden" name="lang" value="' . h($uiLocale) . '">';
+    echo '<div class="search-input-shell">';
+    echo '<span class="input-icon">' . uiIconSvg('search') . '</span>';
+    echo '<input class="input toolbar-input" type="text" name="record_filter" value="' . h($recordFilter) . '" placeholder="Search hosts, types, or values...">';
+    echo '</div>';
+    echo '<button class="btn btn-ghost" type="submit">' . uiIconSvg('search', 'btn-icon') . '<span>Filter</span></button>';
     echo '</form>';
 
     if ($canModifyCurrentZone) {
@@ -3250,7 +3497,7 @@ function renderWorkspaceContent(array $data): string
         echo '<input type="hidden" name="action" value="bulk_delete_rrsets">';
         echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
         echo '<span class="selection-indicator" data-selection-count data-bulk-target="' . h($bulkFormId) . '">0 selected</span>';
-        echo '<button class="btn btn-danger" type="submit" data-bulk-delete-button data-bulk-target="' . h($bulkFormId) . '" disabled>Delete selected</button>';
+        echo '<button class="btn btn-danger" type="submit" data-bulk-delete-button data-bulk-target="' . h($bulkFormId) . '" disabled>' . uiIconSvg('trash', 'btn-icon') . '<span>Delete selected</span></button>';
         echo '</form>';
     }
     echo '</div>';
@@ -3293,14 +3540,14 @@ function renderWorkspaceContent(array $data): string
             echo '</div></td>';
             echo '<td><div class="action-stack">';
             if ($canModifyCurrentZone && $rrsetType !== 'LUA') {
-                echo '<a class="btn btn-small btn-ghost" href="#" data-edit="' . $jsPayload . '" onclick="fillEditModal(this.dataset.edit);openModal(\'editModal\');return false;">Edit</a>';
+                echo '<a class="btn btn-small btn-ghost" href="#" data-edit="' . $jsPayload . '" onclick="fillEditModal(this.dataset.edit);openModal(\'editModal\');return false;">' . uiIconSvg('edit', 'btn-icon') . '<span>Edit</span></a>';
                 echo '<form method="post" data-async="workspace" onsubmit="return confirm(\'Delete this entire RRset?\')">';
                 echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
                 echo '<input type="hidden" name="action" value="delete_rrset">';
                 echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
                 echo '<input type="hidden" name="name" value="' . h($displayName) . '">';
                 echo '<input type="hidden" name="type" value="' . h((string)($rrset['type'] ?? '')) . '">';
-                echo '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
+                echo '<button class="btn btn-small btn-danger" type="submit">' . uiIconSvg('trash', 'btn-icon') . '<span>Delete</span></button>';
                 echo '</form>';
             } elseif ($canModifyCurrentZone && $rrsetType === 'LUA') {
                 echo '<span class="surface-note">Raw LUA RRsets are delete-only.</span>';
@@ -3310,7 +3557,7 @@ function renderWorkspaceContent(array $data): string
                 echo '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
                 echo '<input type="hidden" name="name" value="' . h($displayName) . '">';
                 echo '<input type="hidden" name="type" value="' . h((string)$rrset['type'] ?? '') . '">';
-                echo '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
+                echo '<button class="btn btn-small btn-danger" type="submit">' . uiIconSvg('trash', 'btn-icon') . '<span>Delete</span></button>';
                 echo '</form>';
             } else {
                 echo '<span class="surface-note">Writes disabled for this domain.</span>';
@@ -3322,11 +3569,15 @@ function renderWorkspaceContent(array $data): string
     }
     echo '</section>';
 
+    echo renderCountryIpDatabaseSection($countryIpSets, $countryIpSetStats, $canManageCountryDb);
+
     if ($canCreateZones) {
         echo buildCreateZoneModal();
     }
-    echo buildCountryIpSetAddModal();
-    echo buildCountryIpSetEditModal();
+    if ($canManageCountryDb) {
+        echo buildCountryIpSetAddModal();
+        echo buildCountryIpSetEditModal();
+    }
     if ($canModifyCurrentZone) {
         echo buildGeoAddModal((string)$zoneDetails['name'], $config);
         echo buildGeoEditModal((string)$zoneDetails['name']);
@@ -3338,16 +3589,22 @@ function renderWorkspaceContent(array $data): string
     return (string)ob_get_clean();
 }
 
-function renderCountryIpDatabaseSection(array $countryIpSets, array $stats): string
+function renderCountryIpDatabaseSection(array $countryIpSets, array $stats, bool $canManageCountryDb): string
 {
-    $html = '<section class="panel">';
+    $html = '<section class="panel section-panel" id="country-cidr">';
     $html .= '<div class="section-head">';
     $html .= '<div>';
-    $html .= '<span class="section-kicker">Custom matcher</span>';
+    $html .= '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('database') . '</span> Custom matcher</span>';
     $html .= '<h2 class="section-title">Country CIDR Database</h2>';
     $html .= '<p class="section-copy">Manage country-to-CIDR mappings here. GeoDNS rules automatically use these CIDR lists through PowerDNS Lua <code>netmask()</code> matching, and any country code without a custom list falls back to the default backend GeoIP lookup.</p>';
     $html .= '</div>';
-    $html .= '<div class="rule-summary"><span class="pill">Countries ' . (int)($stats['country_count'] ?? 0) . '</span><span class="pill">CIDRs ' . (int)($stats['cidr_count'] ?? 0) . '</span><a class="btn btn-primary" href="#" onclick="openModal(\'countryIpSetAddModal\');return false;">Add country</a></div>';
+    $html .= '<div class="rule-summary"><span class="pill">Countries ' . (int)($stats['country_count'] ?? 0) . '</span><span class="pill">CIDRs ' . (int)($stats['cidr_count'] ?? 0) . '</span>';
+    if ($canManageCountryDb) {
+        $html .= '<a class="btn btn-primary" href="#" onclick="openModal(\'countryIpSetAddModal\');return false;">' . uiIconSvg('plus', 'btn-icon') . '<span>Add country</span></a>';
+    } else {
+        $html .= '<span class="pill pill-muted">Read-only</span>';
+    }
+    $html .= '</div>';
     $html .= '</div>';
 
     if ($countryIpSets === []) {
@@ -3356,7 +3613,7 @@ function renderCountryIpDatabaseSection(array $countryIpSets, array $stats): str
         return $html;
     }
 
-    $html .= '<div class="table-wrap"><table><thead><tr><th>Code</th><th>Name</th><th>CIDRs</th><th>Used By</th><th>Preview</th><th>Actions</th></tr></thead><tbody>';
+    $html .= '<div class="table-wrap"><table><thead><tr><th>Country</th><th>CIDRs</th><th>Used By</th><th>Preview</th><th>Actions</th></tr></thead><tbody>';
     foreach ($countryIpSets as $countryIpSet) {
         $editPayload = htmlspecialchars(json_encode([
             'country_code' => (string)$countryIpSet['country_code'],
@@ -3366,10 +3623,12 @@ function renderCountryIpDatabaseSection(array $countryIpSets, array $stats): str
 
         $previewCidrs = array_slice($countryIpSet['cidrs'], 0, 3);
         $remaining = max(0, (int)$countryIpSet['cidr_count'] - count($previewCidrs));
+        $countryCode = (string)$countryIpSet['country_code'];
+        $countryName = trim((string)$countryIpSet['country_name']) !== '' ? (string)$countryIpSet['country_name'] : $countryCode;
+        $flag = countryFlagEmoji($countryCode);
 
         $html .= '<tr>';
-        $html .= '<td><span class="type-chip">' . h((string)$countryIpSet['country_code']) . '</span></td>';
-        $html .= '<td><strong>' . h((string)$countryIpSet['country_name']) . '</strong></td>';
+        $html .= '<td><div class="country-main"><span class="flag-emoji country-flag">' . h($flag !== '' ? $flag : '??') . '</span><div><strong>' . h($countryName) . '</strong><small>' . h($countryCode) . '</small></div></div></td>';
         $html .= '<td>' . (int)$countryIpSet['cidr_count'] . '</td>';
         $html .= '<td><span class="pill' . ((int)$countryIpSet['usage_count'] > 0 ? ' pill-success' : ' pill-muted') . '">' . (int)$countryIpSet['usage_count'] . ' rule(s)</span></td>';
         $html .= '<td><div class="records">';
@@ -3381,16 +3640,20 @@ function renderCountryIpDatabaseSection(array $countryIpSets, array $stats): str
         }
         $html .= '</div></td>';
         $html .= '<td><div class="action-stack">';
-        $html .= '<a class="btn btn-small btn-ghost" href="#" data-country-edit="' . $editPayload . '" onclick="fillCountryIpSetEditModal(this.dataset.countryEdit);openModal(\'countryIpSetEditModal\');return false;">Edit</a>';
-        if ((int)$countryIpSet['usage_count'] === 0) {
+        if ($canManageCountryDb) {
+            $html .= '<a class="btn btn-small btn-ghost" href="#" data-country-edit="' . $editPayload . '" onclick="fillCountryIpSetEditModal(this.dataset.countryEdit);openModal(\'countryIpSetEditModal\');return false;">' . uiIconSvg('edit', 'btn-icon') . '<span>Edit</span></a>';
+        }
+        if ($canManageCountryDb && (int)$countryIpSet['usage_count'] === 0) {
             $html .= '<form method="post" data-async="workspace" onsubmit="return confirm(\'Delete this country CIDR database entry?\')">';
             $html .= '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
             $html .= '<input type="hidden" name="action" value="delete_country_ip_set">';
             $html .= '<input type="hidden" name="country_db_original_code" value="' . h((string)$countryIpSet['country_code']) . '">';
-            $html .= '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
+            $html .= '<button class="btn btn-small btn-danger" type="submit">' . uiIconSvg('trash', 'btn-icon') . '<span>Delete</span></button>';
             $html .= '</form>';
-        } else {
+        } elseif ((int)$countryIpSet['usage_count'] > 0) {
             $html .= '<span class="surface-note">In use by active GeoDNS rules</span>';
+        } elseif (!$canManageCountryDb) {
+            $html .= '<span class="surface-note">Writes disabled globally.</span>';
         }
         $html .= '</div></td>';
         $html .= '</tr>';
@@ -3430,9 +3693,10 @@ function describeGeoRuleCountryMatcher(array $countryIpSetMap, array $countryCod
 function renderGeoRulesSection(array $config, array $zoneDetails, array $geoRules, bool $canModifyCurrentZone): string
 {
     $countryIpSetMap = fetchCountryIpSetMap($config);
-    $html = '<section class="panel">';
+    $html = '<section class="panel section-panel" id="geo-rules">';
     $html .= '<div class="section-head">';
     $html .= '<div>';
+    $html .= '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('map') . '</span> Geo routing</span>';
     $html .= '<h2 class="section-title">GeoDNS Rules</h2>';
     $html .= '<p class="section-copy">Geo decisions live inside this domain project. Use them when <code>@</code>, <code>www</code>, or any other host should answer differently for Iran versus the default world route.</p>';
     $html .= '</div>';
@@ -3467,7 +3731,7 @@ function renderGeoRulesSection(array $config, array $zoneDetails, array $geoRule
         $html .= '<tr>';
         $html .= '<td><div class="mono">' . h((string)$rule['display_name']) . '</div></td>';
         $html .= '<td><span class="type-chip">' . h((string)$rule['record_type']) . '</span></td>';
-        $html .= '<td><div class="status-stack"><span>' . h(implode(', ', $rule['country_codes'])) . '</span><span class="small muted">' . h($countryMatcherSummary) . '</span></div></td>';
+        $html .= '<td><div class="status-stack">' . renderCountryChipList($rule['country_codes']) . '<span class="small muted">' . h($countryMatcherSummary) . '</span></div></td>';
         $html .= '<td>' . renderPoolLines($rule['country_answers']) . '</td>';
         $html .= '<td>' . renderPoolLines($rule['default_answers']) . '</td>';
         $html .= '<td>' . h((string)$rule['ttl']) . '</td>';
@@ -3475,20 +3739,20 @@ function renderGeoRulesSection(array $config, array $zoneDetails, array $geoRule
         $html .= '<td>' . renderGeoRuleStatus($rule) . '</td>';
         $html .= '<td><div class="action-stack">';
         if ($canModifyCurrentZone) {
-            $html .= '<a class="btn btn-small btn-ghost" href="#" data-geo-edit="' . $editPayload . '" onclick="fillGeoEditModal(this.dataset.geoEdit);openModal(\'geoEditModal\');return false;">Edit</a>';
+            $html .= '<a class="btn btn-small btn-ghost" href="#" data-geo-edit="' . $editPayload . '" onclick="fillGeoEditModal(this.dataset.geoEdit);openModal(\'geoEditModal\');return false;">' . uiIconSvg('edit', 'btn-icon') . '<span>Edit</span></a>';
             $html .= '<form method="post" data-async="workspace">';
             $html .= '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
             $html .= '<input type="hidden" name="action" value="sync_geo_rule">';
             $html .= '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
             $html .= '<input type="hidden" name="geo_rule_id" value="' . (int)$rule['id'] . '">';
-            $html .= '<button class="btn btn-small btn-ghost" type="submit">Sync</button>';
+            $html .= '<button class="btn btn-small btn-ghost" type="submit">' . uiIconSvg('sync', 'btn-icon') . '<span>Sync</span></button>';
             $html .= '</form>';
             $html .= '<form method="post" data-async="workspace" onsubmit="return confirm(\'Delete this GeoDNS rule?\')">';
             $html .= '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
             $html .= '<input type="hidden" name="action" value="delete_geo_rule">';
             $html .= '<input type="hidden" name="zone_name" value="' . h((string)$zoneDetails['name']) . '">';
             $html .= '<input type="hidden" name="geo_rule_id" value="' . (int)$rule['id'] . '">';
-            $html .= '<button class="btn btn-small btn-danger" type="submit">Delete</button>';
+            $html .= '<button class="btn btn-small btn-danger" type="submit">' . uiIconSvg('trash', 'btn-icon') . '<span>Delete</span></button>';
             $html .= '</form>';
         } else {
             $html .= '<span class="small muted">Writes disabled for this domain.</span>';
@@ -3539,22 +3803,22 @@ function buildGeoAddModal(string $zoneName, array $config): string
     $defaultCountries = implode(',', defaultGeoCountryCodes($config));
     $defaultTtl = defaultGeoRuleTtl($config);
 
-    return '<div class="modal" id="geoAddModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>New GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoAddModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" name="geo_name" value="@" placeholder="@ or www" required></div><div><label>Answer type</label><select class="input" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" name="geo_ttl" value="' . h((string)$defaultTtl) . '" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" name="geo_country_codes" value="' . h($defaultCountries) . '" placeholder="IR or IR,AF" required></div></div><label>Matched pool</label><textarea class="textarea mono" name="geo_country_answers" rows="5" placeholder="185.112.35.197" required></textarea><label>Default pool</label><textarea class="textarea mono" name="geo_default_answers" rows="5" placeholder="203.0.113.20" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" name="geo_health_check_port" min="1" max="65535" placeholder="443"></div><div><label>Behavior</label><div class="hint">If a health port is set, the chosen country pool falls back to the other pool when that TCP port is down.</div></div></div><label class="check-row"><input type="checkbox" name="geo_enabled" value="1" checked> Publish this rule immediately</label><div class="hint">A and AAAA GeoDNS rules at the same hostname share one PowerDNS LUA RRset, so keep their TTL identical.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoAddModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create GeoDNS rule</button></div></form></div></div>';
+    return '<div class="modal" id="geoAddModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>New GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoAddModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" name="geo_name" value="@" placeholder="@ or www" required></div><div><label>Answer type</label><select class="input" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" name="geo_ttl" value="' . h((string)$defaultTtl) . '" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" name="geo_country_codes" value="' . h($defaultCountries) . '" placeholder="IR or IR,AF" required></div></div><label>Matched pool</label><textarea class="textarea mono" name="geo_country_answers" rows="5" placeholder="185.112.35.197" required></textarea><label>Default pool</label><textarea class="textarea mono" name="geo_default_answers" rows="5" placeholder="203.0.113.20" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" name="geo_health_check_port" min="1" max="65535" placeholder="443"></div><div><label>Behavior</label><div class="hint">If a health port is set, the chosen country pool falls back to the other pool when that TCP port is down.</div></div></div><label class="check-row"><input type="checkbox" name="geo_enabled" value="1" checked> Publish this rule immediately</label><div class="hint">A and AAAA GeoDNS rules at the same hostname share one PowerDNS LUA RRset, so keep their TTL identical.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoAddModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create GeoDNS rule</button></div></form></div></div>';
 }
 
 function buildGeoEditModal(string $zoneName): string
 {
-    return '<div class="modal" id="geoEditModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoEditModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><input type="hidden" name="geo_rule_id" id="geo_edit_rule_id"><div class="grid-two"><div><label>Host</label><input class="input" id="geo_edit_name" name="geo_name" required></div><div><label>Answer type</label><select class="input" id="geo_edit_record_type" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" id="geo_edit_ttl" name="geo_ttl" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" id="geo_edit_country_codes" name="geo_country_codes" required></div></div><label>Matched pool</label><textarea class="textarea mono" id="geo_edit_country_answers" name="geo_country_answers" rows="5" required></textarea><label>Default pool</label><textarea class="textarea mono" id="geo_edit_default_answers" name="geo_default_answers" rows="5" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" id="geo_edit_health_check_port" name="geo_health_check_port" min="1" max="65535"></div><div><label>Behavior</label><div class="hint">Changing the hostname or answer type re-syncs the new LUA RRset and also cleans up the old location when needed.</div></div></div><label class="check-row"><input type="checkbox" id="geo_edit_enabled" name="geo_enabled" value="1"> Publish this rule immediately</label><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoEditModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save GeoDNS rule</button></div></form></div></div>';
+    return '<div class="modal" id="geoEditModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit GeoDNS rule</h3><button class="icon-btn" type="button" onclick="closeModal(\'geoEditModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_geo_rule"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><input type="hidden" name="geo_rule_id" id="geo_edit_rule_id"><div class="grid-two"><div><label>Host</label><input class="input" id="geo_edit_name" name="geo_name" required></div><div><label>Answer type</label><select class="input" id="geo_edit_record_type" name="geo_record_type"><option value="A">A</option><option value="AAAA">AAAA</option></select></div><div><label>TTL</label><input class="input" type="number" id="geo_edit_ttl" name="geo_ttl" min="1" max="2147483647" required></div><div><label>Countries</label><input class="input mono" id="geo_edit_country_codes" name="geo_country_codes" required></div></div><label>Matched pool</label><textarea class="textarea mono" id="geo_edit_country_answers" name="geo_country_answers" rows="5" required></textarea><label>Default pool</label><textarea class="textarea mono" id="geo_edit_default_answers" name="geo_default_answers" rows="5" required></textarea><div class="grid-two"><div><label>Health check port</label><input class="input" type="number" id="geo_edit_health_check_port" name="geo_health_check_port" min="1" max="65535"></div><div><label>Behavior</label><div class="hint">Changing the hostname or answer type re-syncs the new LUA RRset and also cleans up the old location when needed.</div></div></div><label class="check-row"><input type="checkbox" id="geo_edit_enabled" name="geo_enabled" value="1"> Publish this rule immediately</label><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'geoEditModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save GeoDNS rule</button></div></form></div></div>';
 }
 
 function buildCountryIpSetAddModal(): string
 {
-    return '<div class="modal" id="countryIpSetAddModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>New country CIDR set</h3><button class="icon-btn" type="button" onclick="closeModal(\'countryIpSetAddModal\')">&times;</button></div><div class="modal-intro">Create a two-letter country code such as <code>IR</code>, then paste the CIDR list that should be used for GeoDNS matching. Saving this entry automatically re-syncs any GeoDNS rules already using that code.</div><form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_country_ip_set"><div class="grid-two"><div><label>Country code</label><input class="input mono" name="country_db_code" value="IR" maxlength="2" placeholder="IR" required></div><div><label>Display name</label><input class="input" name="country_db_name" value="Iran" placeholder="Iran"></div></div><label>CIDR ranges</label><textarea class="textarea mono" name="country_db_cidrs" rows="12" placeholder="5.52.0.0/14&#10;37.32.0.0/12" required></textarea><div class="hint">Use one CIDR per line. Plain IPs are also accepted and converted to host routes such as <code>/32</code> or <code>/128</code>.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'countryIpSetAddModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save country database</button></div></form></div></div>';
+    return '<div class="modal" id="countryIpSetAddModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>New country CIDR set</h3><button class="icon-btn" type="button" onclick="closeModal(\'countryIpSetAddModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div><div class="modal-intro">Create a two-letter country code such as <code>IR</code>, then paste the CIDR list that should be used for GeoDNS matching. Saving this entry automatically re-syncs any GeoDNS rules already using that code.</div><form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_country_ip_set"><div class="grid-two"><div><label>Country code</label><input class="input mono" name="country_db_code" value="IR" maxlength="2" placeholder="IR" required></div><div><label>Display name</label><input class="input" name="country_db_name" value="Iran" placeholder="Iran"></div></div><label>CIDR ranges</label><textarea class="textarea mono" name="country_db_cidrs" rows="12" placeholder="5.52.0.0/14&#10;37.32.0.0/12" required></textarea><div class="hint">Use one CIDR per line. Plain IPs are also accepted and converted to host routes such as <code>/32</code> or <code>/128</code>.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'countryIpSetAddModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save country database</button></div></form></div></div>';
 }
 
 function buildCountryIpSetEditModal(): string
 {
-    return '<div class="modal" id="countryIpSetEditModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit country CIDR set</h3><button class="icon-btn" type="button" onclick="closeModal(\'countryIpSetEditModal\')">&times;</button></div><div class="modal-intro">Updating a country CIDR set automatically re-syncs every GeoDNS rule that references this code.</div><form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_country_ip_set"><input type="hidden" name="country_db_original_code" id="country_db_edit_original_code"><div class="grid-two"><div><label>Country code</label><input class="input mono" id="country_db_edit_code" name="country_db_code" maxlength="2" readonly required></div><div><label>Display name</label><input class="input" id="country_db_edit_name" name="country_db_name" placeholder="Iran"></div></div><label>CIDR ranges</label><textarea class="textarea mono" id="country_db_edit_cidrs" name="country_db_cidrs" rows="12" required></textarea><div class="hint">Keep one CIDR per line. Existing GeoDNS rules using this code will refresh after you save.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'countryIpSetEditModal\')">Cancel</button><button class="btn btn-primary" type="submit">Update country database</button></div></form></div></div>';
+    return '<div class="modal" id="countryIpSetEditModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit country CIDR set</h3><button class="icon-btn" type="button" onclick="closeModal(\'countryIpSetEditModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div><div class="modal-intro">Updating a country CIDR set automatically re-syncs every GeoDNS rule that references this code.</div><form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_country_ip_set"><input type="hidden" name="country_db_original_code" id="country_db_edit_original_code"><div class="grid-two"><div><label>Country code</label><input class="input mono" id="country_db_edit_code" name="country_db_code" maxlength="2" readonly required></div><div><label>Display name</label><input class="input" id="country_db_edit_name" name="country_db_name" placeholder="Iran"></div></div><label>CIDR ranges</label><textarea class="textarea mono" id="country_db_edit_cidrs" name="country_db_cidrs" rows="12" required></textarea><div class="hint">Keep one CIDR per line. Existing GeoDNS rules using this code will refresh after you save.</div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'countryIpSetEditModal\')">Cancel</button><button class="btn btn-primary" type="submit">Update country database</button></div></form></div></div>';
 }
 
 function manualRecordTypes(): array
@@ -3564,22 +3828,22 @@ function manualRecordTypes(): array
 
 function buildAddModal(string $zoneName): string
 {
-    return '<div class="modal" id="addModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Add record</h3><button class="icon-btn" type="button" onclick="closeModal(\'addModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="add_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" name="name" value="@" placeholder="@ or subdomain" required></div><div><label>Type</label><select class="input" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" name="ttl" value="300" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Use one value per line for multi-value RRsets.</div></div></div><label>Content</label><textarea class="textarea" name="content" rows="8" placeholder="185.112.35.197 or 10 mail.example.com." required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'addModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create record</button></div></form></div></div>';
+    return '<div class="modal" id="addModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Add record</h3><button class="icon-btn" type="button" onclick="closeModal(\'addModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="add_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" name="name" value="@" placeholder="@ or subdomain" required></div><div><label>Type</label><select class="input" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" name="ttl" value="300" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Use one value per line for multi-value RRsets.</div></div></div><label>Content</label><textarea class="textarea" name="content" rows="8" placeholder="185.112.35.197 or 10 mail.example.com." required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'addModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create record</button></div></form></div></div>';
 }
 
 function buildEditModal(string $zoneName): string
 {
-    return '<div class="modal" id="editModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit record</h3><button class="icon-btn" type="button" onclick="closeModal(\'editModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" id="edit_name" name="name" required></div><div><label>Type</label><select class="input" id="edit_type" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" id="edit_ttl" name="ttl" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Editing replaces the whole RRset for this host and type.</div></div></div><label>Content</label><textarea class="textarea" id="edit_content" name="content" rows="8" required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'editModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div></form></div></div>';
+    return '<div class="modal" id="editModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit record</h3><button class="icon-btn" type="button" onclick="closeModal(\'editModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" id="edit_name" name="name" required></div><div><label>Type</label><select class="input" id="edit_type" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" id="edit_ttl" name="ttl" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Editing replaces the whole RRset for this host and type.</div></div></div><label>Content</label><textarea class="textarea" id="edit_content" name="content" rows="8" required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'editModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div></form></div></div>';
 }
 
 function buildImportModal(string $zoneName): string
 {
-    return '<div class="modal" id="importModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Import domain records</h3><button class="icon-btn" type="button" onclick="closeModal(\'importModal\')">&times;</button></div>' . modalScopeBanner($zoneName) . '<form method="post" enctype="multipart/form-data" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="import_zone_file"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><label>Zone file</label><input class="input" type="file" name="zone_file" accept=".txt,.zone,text/plain"><div class="hint">Upload a Cloudflare/BIND-style text export, or paste the same content below.</div><label>Or paste zone text</label><textarea class="textarea" name="zone_text" rows="12" placeholder="hidata.org. 3600 IN A 192.0.2.10"></textarea><div class="grid-two"><div><label>Import options</label><div class="hint"><label class="check-row"><input type="checkbox" name="import_ns" value="1"> Import NS records too</label><label class="check-row"><input type="checkbox" name="import_soa" value="1"> Import SOA record too</label></div></div><div><label>Notes</label><div class="hint">Imported RRsets are upserted with REPLACE, so records in this file overwrite the same name/type in the selected domain. Records not present in the file are kept. SOA and NS are skipped by default because Cloudflare exports often contain authority values that should be changed before production use.</div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'importModal\')">Cancel</button><button class="btn btn-primary" type="submit">Import records</button></div></form></div></div>';
+    return '<div class="modal" id="importModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Import domain records</h3><button class="icon-btn" type="button" onclick="closeModal(\'importModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" enctype="multipart/form-data" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="import_zone_file"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><label>Zone file</label><input class="input" type="file" name="zone_file" accept=".txt,.zone,text/plain"><div class="hint">Upload a Cloudflare/BIND-style text export, or paste the same content below.</div><label>Or paste zone text</label><textarea class="textarea" name="zone_text" rows="12" placeholder="hidata.org. 3600 IN A 192.0.2.10"></textarea><div class="grid-two"><div><label>Import options</label><div class="hint"><label class="check-row"><input type="checkbox" name="import_ns" value="1"> Import NS records too</label><label class="check-row"><input type="checkbox" name="import_soa" value="1"> Import SOA record too</label></div></div><div><label>Notes</label><div class="hint">Imported RRsets are upserted with REPLACE, so records in this file overwrite the same name/type in the selected domain. Records not present in the file are kept. SOA and NS are skipped by default because Cloudflare exports often contain authority values that should be changed before production use.</div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'importModal\')">Cancel</button><button class="btn btn-primary" type="submit">Import records</button></div></form></div></div>';
 }
 
 function buildCreateZoneModal(): string
 {
-    return '<div class="modal" id="zoneCreateModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Create domain project</h3><button class="icon-btn" type="button" onclick="closeModal(\'zoneCreateModal\')">&times;</button></div><div class="modal-intro">Start by defining the main domain, for example <code>hidata.org</code>. After this project is created, all records, imports, exports, and GeoDNS rules are managed inside the same domain.</div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_zone"><div class="grid-two"><div><label>Main domain</label><input class="input" name="zone_name" placeholder="hidata.org" required></div><div><label>Project type</label><select class="input" id="zone_kind" name="zone_kind" onchange="toggleZoneKindFields(this.value)">' . zoneKindOptions() . '</select></div><div id="zone_nameservers_field"><label>Nameservers</label><textarea class="textarea" name="nameservers" rows="5" placeholder="ns1.hidata.org.&#10;ns2.hidata.org." required></textarea></div><div id="zone_masters_field" style="display:none"><label>Masters</label><textarea class="textarea" name="masters" rows="5" placeholder="192.0.2.10&#10;192.0.2.11"></textarea></div><div><label>Account</label><input class="input" name="account" placeholder="Optional owner/account label"></div><div><label>Project options</label><div class="hint"><label class="check-row"><input type="checkbox" name="dnssec" checked> Enable DNSSEC support</label><label class="check-row"><input type="checkbox" name="api_rectify" checked> Enable API rectify</label></div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'zoneCreateModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create domain</button></div></form></div></div>';
+    return '<div class="modal" id="zoneCreateModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Create domain project</h3><button class="icon-btn" type="button" onclick="closeModal(\'zoneCreateModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div><div class="modal-intro">Start by defining the main domain, for example <code>hidata.org</code>. After this project is created, all records, imports, exports, and GeoDNS rules are managed inside the same domain.</div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_zone"><div class="grid-two"><div><label>Main domain</label><input class="input" name="zone_name" placeholder="hidata.org" required></div><div><label>Project type</label><select class="input" id="zone_kind" name="zone_kind" onchange="toggleZoneKindFields(this.value)">' . zoneKindOptions() . '</select></div><div id="zone_nameservers_field"><label>Nameservers</label><textarea class="textarea" name="nameservers" rows="5" placeholder="ns1.hidata.org.&#10;ns2.hidata.org." required></textarea></div><div id="zone_masters_field" style="display:none"><label>Masters</label><textarea class="textarea" name="masters" rows="5" placeholder="192.0.2.10&#10;192.0.2.11"></textarea></div><div><label>Account</label><input class="input" name="account" placeholder="Optional owner/account label"></div><div><label>Project options</label><div class="hint"><label class="check-row"><input type="checkbox" name="dnssec" checked> Enable DNSSEC support</label><label class="check-row"><input type="checkbox" name="api_rectify" checked> Enable API rectify</label></div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'zoneCreateModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create domain</button></div></form></div></div>';
 }
 
 function zoneKindOptions(): string
@@ -3606,64 +3870,73 @@ function baseCss(): string
 {
     return <<<'CSS'
 :root{
-  --bg:#f6f8fc;
-  --bg-soft:#eef3fd;
+  --bg:#f5f7fb;
+  --bg-soft:#eef3ff;
   --panel:#ffffff;
-  --panel-2:#f8faff;
-  --panel-3:#eef3fd;
-  --line:#dde3ee;
-  --line-strong:#c8d3e1;
-  --text:#1f1f1f;
-  --muted:#5f6368;
-  --primary:#1a73e8;
-  --primary-strong:#0b57d0;
-  --primary-soft:#e8f0fe;
-  --danger:#d93025;
-  --danger-soft:#fce8e6;
-  --success:#137333;
-  --success-soft:#e6f4ea;
-  --warning:#b06000;
-  --shadow:0 22px 48px rgba(60,64,67,.14);
-  --shadow-soft:0 10px 24px rgba(60,64,67,.10);
+  --panel-2:#f8fbff;
+  --panel-3:#edf3ff;
+  --line:#e6ecf3;
+  --line-strong:#cfd9e5;
+  --text:#2a3547;
+  --muted:#6c7a92;
+  --primary:#5d87ff;
+  --primary-strong:#3f68e5;
+  --primary-soft:#ecf2ff;
+  --danger:#fa896b;
+  --danger-soft:#fff0ec;
+  --success:#13deb9;
+  --success-soft:#e8faf6;
+  --warning:#ffae1f;
+  --warning-soft:#fff7e8;
+  --shadow:0 18px 42px rgba(42,53,71,.08);
+  --shadow-soft:0 10px 24px rgba(42,53,71,.06);
+  --shadow-xs:0 4px 14px rgba(42,53,71,.05);
 }
 *{box-sizing:border-box}
-html,body{margin:0;padding:0;min-height:100%;font-family:"Google Sans","Segoe UI Variable","Segoe UI",system-ui,sans-serif;background:radial-gradient(circle at 0% 0%,rgba(26,115,232,.10),transparent 24%),radial-gradient(circle at 100% 0%,rgba(251,188,5,.10),transparent 18%),radial-gradient(circle at 100% 100%,rgba(52,168,83,.10),transparent 20%),radial-gradient(circle at 0% 100%,rgba(234,67,53,.08),transparent 18%),var(--bg);color:var(--text)}
+html,body{margin:0;padding:0;min-height:100%;font-family:"Plus Jakarta Sans","Segoe UI Variable","Segoe UI",system-ui,sans-serif;background:
+radial-gradient(circle at 0% 0%,rgba(93,135,255,.16),transparent 28%),
+radial-gradient(circle at 100% 0%,rgba(19,222,185,.12),transparent 24%),
+radial-gradient(circle at 100% 100%,rgba(255,174,31,.12),transparent 22%),
+linear-gradient(180deg,#f8fbff 0%,#f3f7fb 100%);
+color:var(--text)}
 body.modal-active{overflow:hidden}
 a{color:inherit;text-decoration:none}
 code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-code{background:var(--primary-soft);border:1px solid #d2e3fc;border-radius:10px;padding:2px 6px;color:var(--primary-strong)}
-.input,.textarea,select{width:100%;background:#fff;border:1px solid var(--line);color:var(--text);border-radius:18px;padding:13px 15px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease;box-shadow:inset 0 1px 0 rgba(255,255,255,.8)}
-.input:focus,.textarea:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 4px rgba(26,115,232,.14)}
+code{background:var(--primary-soft);border:1px solid #d7e2ff;border-radius:10px;padding:2px 7px;color:var(--primary-strong)}
+.input,.textarea,select{width:100%;background:#fff;border:1px solid var(--line);color:var(--text);border-radius:18px;padding:13px 15px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease;box-shadow:inset 0 1px 0 rgba(255,255,255,.92)}
+.input:focus,.textarea:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 4px rgba(93,135,255,.16)}
 .textarea{resize:vertical;min-height:140px}
-label{display:block;margin:0 0 8px;font-size:13px;color:#3c4043;font-weight:700}
+label{display:block;margin:0 0 8px;font-size:13px;color:#41516b;font-weight:800}
 .check-row{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--text);margin:0 0 10px}
 .check-row input{margin:0}
-.btn{appearance:none;border:0;border-radius:999px;padding:11px 18px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:transform .18s ease,box-shadow .18s ease,background .18s ease,border-color .18s ease,opacity .18s ease;letter-spacing:.01em}
+.btn{appearance:none;border:0;border-radius:16px;padding:11px 18px;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:transform .18s ease,box-shadow .18s ease,background .18s ease,border-color .18s ease,opacity .18s ease;letter-spacing:.01em}
 .btn:hover{transform:translateY(-1px);box-shadow:var(--shadow-soft)}
 .btn:active{transform:translateY(0)}
 .btn[disabled]{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
-.btn-primary{background:var(--primary);color:#fff;box-shadow:0 12px 26px rgba(26,115,232,.24)}
-.btn-primary:hover{background:var(--primary-strong)}
+.btn-primary{background:linear-gradient(135deg,var(--primary) 0%,#7da0ff 100%);color:#fff;box-shadow:0 16px 26px rgba(93,135,255,.26)}
+.btn-primary:hover{background:linear-gradient(135deg,var(--primary-strong) 0%,#6287ff 100%)}
 .btn-ghost{background:var(--panel);color:var(--text);border:1px solid var(--line)}
-.btn-danger{background:var(--danger-soft);color:var(--danger);border:1px solid #f6c7c3}
-.btn-small{padding:8px 13px;border-radius:999px;font-size:13px}
+.btn-danger{background:var(--danger-soft);color:var(--danger);border:1px solid #ffd0c6}
+.btn-small{padding:8px 13px;border-radius:14px;font-size:13px}
 .btn-block{width:100%}
+.btn-icon{width:16px;height:16px;flex:none}
 .form-pending{opacity:.84;pointer-events:none}
 .flash-mount{display:grid;gap:12px}
 .flash-mount:empty{display:none}
-.flash{padding:14px 16px;border-radius:22px;font-weight:700;border:1px solid transparent;box-shadow:var(--shadow-soft)}
-.flash-success{background:var(--success-soft);border-color:#c7e7cf;color:var(--success)}
-.flash-danger{background:var(--danger-soft);border-color:#f4c7c3;color:var(--danger)}
-.flash-info{background:var(--primary-soft);border-color:#d2e3fc;color:var(--primary-strong)}
+.flash{padding:14px 16px;border-radius:20px;font-weight:700;border:1px solid transparent;box-shadow:var(--shadow-xs)}
+.flash-success{background:var(--success-soft);border-color:#c8f2ea;color:#0f9f83}
+.flash-danger{background:var(--danger-soft);border-color:#ffd2c8;color:#db6f50}
+.flash-info{background:var(--primary-soft);border-color:#d7e2ff;color:var(--primary-strong)}
 .muted{color:var(--muted)}
 .small{font-size:13px}
-.pill,.badge,.type-chip{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;border:1px solid #d2e3fc;background:var(--primary-soft);color:var(--primary-strong);font-size:12px;font-weight:800}
-.empty{padding:28px;border:1px dashed #c8d3e1;border-radius:24px;color:var(--muted);text-align:center;background:rgba(255,255,255,.74)}
-.surface-note{display:inline-flex;align-items:center;padding:8px 12px;border-radius:14px;background:#f8f9fa;color:var(--muted);border:1px solid var(--line);font-size:12px;font-weight:600}
-.selection-indicator{display:inline-flex;align-items:center;min-height:44px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:var(--panel-2);font-size:13px;font-weight:700;color:var(--muted)}
+.pill,.badge,.type-chip{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;border:1px solid #dce5ff;background:var(--primary-soft);color:var(--primary-strong);font-size:12px;font-weight:800}
+.empty{padding:28px;border:1px dashed var(--line-strong);border-radius:24px;color:var(--muted);text-align:center;background:rgba(255,255,255,.82)}
+.surface-note{display:inline-flex;align-items:center;padding:8px 12px;border-radius:14px;background:#fbfcfe;color:var(--muted);border:1px solid var(--line);font-size:12px;font-weight:700}
+.selection-indicator{display:inline-flex;align-items:center;min-height:44px;padding:0 14px;border-radius:14px;border:1px solid var(--line);background:var(--panel-2);font-size:13px;font-weight:700;color:var(--muted)}
 .table-check{width:18px;height:18px;accent-color:var(--primary);cursor:pointer}
 .ui-icon{width:20px;height:20px;display:block}
 .hidata-logo{width:100%;height:100%;display:block}
+.flag-emoji{display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:18px}
 CSS;
 }
 
@@ -3671,114 +3944,199 @@ function loginCss(): string
 {
     return <<<'CSS'
 .login-body{min-height:100vh;display:grid;place-items:center;padding:32px}
-.login-shell{width:min(420px,100%);display:grid;gap:20px}
-.login-brand{display:grid;justify-items:center;gap:16px;text-align:center}
-.brand-mark{width:108px;height:108px;border-radius:32px;background:linear-gradient(150deg,#0f3150 0%,#165c8f 52%,#19b6ff 100%);color:#fff;display:grid;place-items:center;box-shadow:0 28px 60px rgba(15,49,80,.18)}
-.brand-mark .hidata-logo{width:54px;height:62px}
-.brand-title{font-size:44px;font-weight:900;line-height:1}
-.login-card{background:rgba(255,255,255,.86);border:1px solid rgba(215,226,236,.9);backdrop-filter:blur(16px);padding:24px;border-radius:28px;box-shadow:var(--shadow);display:grid;gap:14px}
-.login-card form{display:grid;gap:14px}
+.login-shell{width:min(1180px,100%);display:grid;grid-template-columns:minmax(0,1.1fr) minmax(360px,.9fr);gap:24px;align-items:stretch}
+.login-showcase,.login-card{background:rgba(255,255,255,.9);border:1px solid rgba(230,236,243,.95);backdrop-filter:blur(18px);border-radius:32px;box-shadow:var(--shadow)}
+.login-showcase{padding:32px;display:grid;gap:24px;position:relative;overflow:hidden}
+.login-showcase::before{content:"";position:absolute;inset:-120px auto auto -80px;width:260px;height:260px;border-radius:50%;background:rgba(93,135,255,.12)}
+.login-showcase::after{content:"";position:absolute;inset:auto -80px -120px auto;width:280px;height:280px;border-radius:50%;background:rgba(19,222,185,.11)}
+.login-brand{display:flex;align-items:center;gap:18px;position:relative;z-index:1}
+.brand-mark{width:92px;height:92px;border-radius:28px;background:linear-gradient(145deg,#324dff 0%,#5d87ff 48%,#13deb9 100%);color:#fff;display:grid;place-items:center;box-shadow:0 30px 60px rgba(93,135,255,.22)}
+.brand-mark .hidata-logo{width:48px;height:56px}
+.brand-title{font-size:42px;font-weight:900;line-height:1}
+.login-brand-copy{margin:10px 0 0;color:var(--muted);line-height:1.8;max-width:520px}
+.login-showcase-card{position:relative;z-index:1;display:grid;gap:18px}
+.login-title{margin:0;font-size:40px;line-height:1.05;letter-spacing:-.04em;max-width:620px}
+.login-copy{margin:0;color:var(--muted);line-height:1.9;max-width:640px}
+.login-feature-list{display:grid;gap:14px}
+.login-feature{display:flex;gap:14px;align-items:flex-start;padding:16px 18px;border-radius:22px;border:1px solid rgba(230,236,243,.95);background:rgba(255,255,255,.84)}
+.login-feature strong{display:block;margin-bottom:6px}
+.login-feature small{display:block;color:var(--muted);line-height:1.7}
+.feature-icon{width:42px;height:42px;border-radius:14px;background:var(--primary-soft);color:var(--primary-strong);display:grid;place-items:center;flex:none}
+.login-card{padding:28px;display:grid;gap:18px;align-content:start}
+.login-card-head{display:grid;gap:8px}
+.login-card-head h2{margin:0;font-size:30px;letter-spacing:-.03em}
+.login-card-head p{margin:0;color:var(--muted);line-height:1.8}
+.login-toolbar{display:flex;justify-content:flex-end}
+.login-form{display:grid;gap:14px}
 .field-shell{position:relative}
-.field-icon{position:absolute;inset:0 auto 0 14px;display:grid;place-items:center;color:#6d8398;pointer-events:none}
-.login-input{padding-left:48px;height:56px;border-radius:18px}
+.field-icon{position:absolute;inset-block:auto 15px;inset-inline-start:14px;display:grid;place-items:center;color:#7c8ca7;pointer-events:none}
+.login-input{padding-inline-start:48px;height:56px;border-radius:18px}
 .login-submit{height:56px;border-radius:18px}
 .submit-icon{width:22px;height:22px}
-@media (max-width:640px){.login-body{padding:20px}.brand-title{font-size:36px}.brand-mark{width:96px;height:96px}}
+@media (max-width:980px){.login-shell{grid-template-columns:1fr}.login-title{font-size:34px}}
+@media (max-width:640px){.login-body{padding:18px}.login-showcase,.login-card{padding:22px}.brand-mark{width:80px;height:80px}.brand-title{font-size:34px}.login-title{font-size:30px}}
 CSS;
 }
 
 function appCss(): string
 {
     return <<<'CSS'
-.layout{display:grid;grid-template-columns:320px minmax(0,1fr);min-height:100vh}
-.sidebar{position:sticky;top:0;height:100vh;border-right:1px solid rgba(221,227,238,.9);background:rgba(255,255,255,.82);backdrop-filter:blur(22px);padding:24px 20px;display:flex;flex-direction:column;gap:18px}
-.brand{display:flex;align-items:center;gap:14px;padding:6px 4px 12px}
-.brand-logo{width:60px;height:60px;border-radius:22px;background:linear-gradient(145deg,#0b57d0 0%,#1a73e8 55%,#8ab4f8 100%);display:grid;place-items:center;color:#fff;box-shadow:var(--shadow)}
-.brand-logo .hidata-logo{width:30px;height:34px}
-.brand-name{font-size:23px;font-weight:900}
+.app-body{padding:24px}
+.layout{display:grid;grid-template-columns:320px minmax(0,1fr);gap:24px;min-height:calc(100vh - 48px)}
+.sidebar{position:sticky;top:24px;height:calc(100vh - 48px);display:grid;align-content:start;gap:16px}
+.sidebar-panel,.config-box,.panel{background:rgba(255,255,255,.94);border:1px solid rgba(230,236,243,.95);border-radius:28px;box-shadow:var(--shadow)}
+.sidebar-panel{padding:18px}
+.sidebar-brand-panel{padding:20px}
+.brand{display:flex;align-items:center;gap:14px}
+.brand-logo{width:64px;height:64px;border-radius:22px;background:linear-gradient(145deg,#324dff 0%,#5d87ff 58%,#13deb9 100%);display:grid;place-items:center;color:#fff;box-shadow:0 24px 40px rgba(93,135,255,.24)}
+.brand-logo .hidata-logo{width:32px;height:36px}
+.brand-name{font-size:24px;font-weight:900}
 .brand-tag{font-size:13px;color:var(--muted);margin-top:4px}
-.search-form{display:grid;gap:8px}
-.label,.sidebar-section-title{font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#5f6368}
-.sidebar-section-title{display:flex;justify-content:space-between;align-items:center}
-.zone-list{display:flex;flex-direction:column;gap:10px;max-height:48vh;overflow:auto;padding-right:4px}
-.zone-item{display:grid;gap:4px;background:rgba(255,255,255,.92);border:1px solid transparent;border-radius:24px;padding:14px 16px;transition:border-color .18s ease,background .18s ease,transform .18s ease,box-shadow .18s ease;box-shadow:0 6px 16px rgba(60,64,67,.06)}
-.zone-item:hover{border-color:#c6dafc;background:#f8fbff;transform:translateY(-1px)}
-.zone-item.active{background:var(--primary-soft);border-color:#bfd4f8;box-shadow:0 12px 26px rgba(26,115,232,.12)}
-.zone-name{font-weight:700;word-break:break-all}
-.zone-meta{font-size:12px;color:var(--muted)}
-.config-box{margin-top:auto;border:1px solid var(--line);background:rgba(255,255,255,.92);border-radius:26px;padding:16px;display:grid;gap:12px;box-shadow:var(--shadow-soft)}
-.config-row{display:grid;gap:4px}
-.config-row span{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
-.config-row strong{font-size:13px;word-break:break-all}
-.content{padding:28px;display:flex;flex-direction:column;gap:18px;position:relative}
-.content.is-busy::after{content:"";position:absolute;inset:18px 22px 18px 18px;background:rgba(246,248,252,.68);backdrop-filter:blur(3px);border-radius:30px;z-index:5}
-.content.is-busy::before{content:"Updating workspace...";position:absolute;top:38px;right:40px;padding:10px 14px;border-radius:999px;background:#fff;border:1px solid var(--line);box-shadow:var(--shadow-soft);font-size:13px;font-weight:700;color:var(--muted);z-index:6}
-.panel{background:rgba(255,255,255,.94);border:1px solid rgba(221,227,238,.9);border-radius:30px;padding:24px;box-shadow:var(--shadow)}
-.workspace-topbar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-.workspace-title-group{display:grid;gap:8px}
-.eyebrow{text-transform:uppercase;letter-spacing:.12em;color:var(--primary-strong);font-weight:900;font-size:12px}
-.page-title{margin:0;font-size:36px;line-height:1.04;letter-spacing:-.03em}
-.workspace-copy{margin:0;max-width:760px;color:var(--muted);line-height:1.7}
-.top-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.user-chip{padding:11px 14px;border-radius:999px;background:#fff;border:1px solid var(--line);font-weight:800;box-shadow:var(--shadow-soft)}
-.hero{display:grid;grid-template-columns:1.1fr .9fr;gap:18px;align-items:center}
-.hero-panel{background:linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(232,240,254,.86) 100%)}
-.hero-copy h2{margin:0 0 10px;font-size:30px;line-height:1.15;letter-spacing:-.03em}
-.hero-copy p{margin:0;color:var(--muted);line-height:1.8}
-.hero-grid,.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
-.stat-card{background:#fff;border:1px solid var(--line);border-radius:24px;padding:18px;box-shadow:var(--shadow-soft)}
-.stat-card-accent{background:linear-gradient(180deg,#eef4ff 0%,#ffffff 100%);border-color:#c6dafc}
-.stat-card span{display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
-.stat-card strong{font-size:30px;line-height:1.1;letter-spacing:-.03em}
-.stat-card small{display:block;margin-top:8px;color:var(--muted);line-height:1.6}
-.zone-header{display:grid;grid-template-columns:minmax(0,1.15fr) auto auto;gap:16px;align-items:start}
-.zone-title-wrap{display:grid;gap:6px}
-.zone-title{font-size:30px;font-weight:900;word-break:break-all;letter-spacing:-.03em}
-.zone-subtitle{color:var(--muted);line-height:1.7}
-.zone-badges,.zone-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
-.section-kicker{display:inline-flex;align-items:center;font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--primary-strong)}
+.sidebar-hero-copy{display:grid;gap:10px;margin-top:18px}
+.sidebar-kicker,.sidebar-section-title{font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#6e7b93}
+.sidebar-hero-copy p{margin:0;color:var(--muted);line-height:1.8}
+.sidebar-nav-card{display:grid;gap:10px}
+.shell-nav-link{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:18px;border:1px solid transparent;background:transparent;font-weight:800;color:var(--text);transition:all .18s ease}
+.shell-nav-link:hover{background:var(--panel-2);border-color:#deebff;color:var(--primary-strong)}
+.shell-nav-icon{width:40px;height:40px;border-radius:14px;background:var(--panel-2);border:1px solid #e7eef8;color:var(--primary-strong);display:grid;place-items:center;flex:none}
+.sidebar-search-card,.sidebar-domain-panel{display:grid;gap:12px}
+.search-form{display:grid;gap:10px}
+.search-input-shell{position:relative;flex:1}
+.input-icon{position:absolute;inset-block:0;inset-inline-start:16px;display:grid;place-items:center;color:#8091ac;pointer-events:none}
+.toolbar-input{padding-inline-start:46px}
+.zone-list{display:flex;flex-direction:column;gap:10px;max-height:38vh;overflow:auto;padding-inline-end:4px}
+.zone-item{display:grid;gap:6px;background:linear-gradient(180deg,#ffffff 0%,#fbfdff 100%);border:1px solid transparent;border-radius:22px;padding:14px 16px;transition:border-color .18s ease,background .18s ease,transform .18s ease,box-shadow .18s ease;box-shadow:var(--shadow-xs)}
+.zone-item:hover{border-color:#d9e5ff;background:#f9fbff;transform:translateY(-1px)}
+.zone-item.active{background:linear-gradient(180deg,#f4f8ff 0%,#eef4ff 100%);border-color:#cfe0ff;box-shadow:0 16px 26px rgba(93,135,255,.12)}
+.zone-name{font-weight:800;word-break:break-all}
+.zone-meta{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.zone-icon{width:14px;height:14px}
+.app-stage{min-width:0;display:grid;gap:20px;align-content:start}
+.app-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:6px 6px 0}
+.app-header-copy{display:grid;gap:8px}
+.app-kicker,.section-kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--primary-strong)}
+.app-header-copy h1{margin:0;font-size:42px;line-height:1.02;letter-spacing:-.04em}
+.app-header-copy p{margin:0;max-width:860px;color:var(--muted);line-height:1.8}
+.app-header-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}
+.menu-dropdown{position:relative}
+.menu-dropdown>summary{list-style:none}
+.menu-dropdown>summary::-webkit-details-marker{display:none}
+.menu-trigger{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:18px;background:rgba(255,255,255,.92);border:1px solid var(--line);box-shadow:var(--shadow-xs);cursor:pointer;font-weight:800}
+.menu-trigger-text{white-space:nowrap}
+.menu-caret{width:16px;height:16px;color:#8191aa}
+.menu-card{position:absolute;inset-block-start:calc(100% + 10px);inset-inline-end:0;width:280px;background:#fff;border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);padding:12px;display:grid;gap:8px;z-index:20}
+.menu-label{padding:8px 10px 4px;font-size:11px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#7b89a2}
+.menu-item{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:16px;transition:background .18s ease}
+.menu-item:hover{background:var(--panel-2)}
+.menu-item-copy{display:grid;gap:2px;flex:1;min-width:0}
+.menu-item-copy strong{font-size:14px}
+.menu-item-copy small{color:var(--muted);line-height:1.5}
+.language-item.is-active{background:var(--primary-soft)}
+.menu-check{color:var(--primary-strong)}
+.profile-trigger{padding-inline:12px}
+.profile-trigger-copy{display:grid;gap:2px}
+.profile-trigger-copy strong{font-size:14px}
+.profile-trigger-copy small{font-size:12px;color:var(--muted)}
+.user-avatar{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#5d87ff 0%,#13deb9 100%);display:grid;place-items:center;color:#fff;font-weight:900;flex:none}
+.profile-card{width:290px}
+.menu-row{display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:14px;background:#fbfcfe;border:1px solid #eef2f7}
+.menu-row span{font-size:12px;font-weight:800;color:#7b89a2;text-transform:uppercase;letter-spacing:.06em}
+.menu-row strong{font-size:13px;word-break:break-word;text-align:end}
+.menu-form{padding-top:4px}
+.content{display:grid;gap:20px;position:relative;min-width:0}
+.content.is-busy::after{content:"";position:absolute;inset:0;background:rgba(245,247,251,.64);backdrop-filter:blur(4px);border-radius:30px;z-index:5}
+.content.is-busy::before{content:"Updating workspace...";position:absolute;inset-block-start:18px;inset-inline-end:22px;padding:10px 14px;border-radius:14px;background:#fff;border:1px solid var(--line);box-shadow:var(--shadow-xs);font-size:13px;font-weight:800;color:var(--muted);z-index:6}
+.panel{padding:24px}
+.workspace-hero{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:20px;align-items:start}
+.hero-panel,.zone-hero{background:
+radial-gradient(circle at top right,rgba(93,135,255,.10),transparent 24%),
+linear-gradient(180deg,#ffffff 0%,#f8fbff 100%)}
+.hero-copy{display:grid;gap:14px}
+.section-kicker-icon,.jump-chip-icon,.metric-icon,.feature-icon,.shell-nav-icon,.badge-icon{display:grid;place-items:center}
+.section-kicker-icon,.jump-chip-icon{width:20px;height:20px}
+.hero-heading{margin:0;font-size:34px;line-height:1.05;letter-spacing:-.04em}
+.hero-text{margin:0;color:var(--muted);line-height:1.9}
+.hero-feature-list{display:grid;gap:12px}
+.hero-feature{display:flex;gap:14px;align-items:flex-start;padding:14px 16px;border-radius:20px;background:#fff;border:1px solid #edf2f8}
+.hero-feature strong{display:block;margin-bottom:5px}
+.hero-feature small{display:block;color:var(--muted);line-height:1.7}
+.feature-icon{width:42px;height:42px;border-radius:14px;background:var(--primary-soft);color:var(--primary-strong);flex:none}
+.hero-side,.metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.hero-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;align-content:flex-start;gap:12px}
+.hero-badge-row{display:flex;flex-wrap:wrap;gap:10px}
+.badge-icon{width:16px;height:16px}
+.hero-note{color:var(--muted);line-height:1.8}
+.jump-grid{display:flex;flex-wrap:wrap;gap:10px}
+.jump-chip{display:inline-flex;align-items:center;gap:10px;padding:12px 16px;border-radius:18px;background:rgba(255,255,255,.94);border:1px solid var(--line);box-shadow:var(--shadow-xs);font-weight:800}
+.jump-chip:hover{border-color:#d8e4ff;color:var(--primary-strong)}
+.metric-card{background:#fff;border:1px solid var(--line);border-radius:24px;padding:18px;display:grid;gap:10px;box-shadow:var(--shadow-xs)}
+.metric-card-top{display:flex;align-items:center;gap:12px}
+.metric-icon{width:42px;height:42px;border-radius:14px;background:var(--panel-2);color:var(--primary-strong);flex:none}
+.metric-label{font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#73839c}
+.metric-value{font-size:30px;line-height:1.08;letter-spacing:-.03em;word-break:break-word}
+.metric-note{display:block;color:var(--muted);line-height:1.7}
+.tone-blue .metric-icon{background:var(--primary-soft)}
+.tone-sky .metric-icon{background:#eef8ff;color:#2d76f9}
+.tone-gold .metric-icon{background:var(--warning-soft);color:#cc8a12}
+.tone-emerald .metric-icon{background:var(--success-soft);color:#0ea989}
+.section-panel{scroll-margin-top:24px}
 .section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
-.section-title{margin:0 0 8px;font-size:26px;letter-spacing:-.02em}
-.section-copy{margin:0;color:var(--muted);line-height:1.8;max-width:820px}
+.section-title{margin:0 0 8px;font-size:28px;letter-spacing:-.03em}
+.section-copy{margin:0;color:var(--muted);line-height:1.8;max-width:900px}
 .rule-summary{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
 .table-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.toolbar-form{display:flex;gap:10px;align-items:center;flex:1;min-width:260px;max-width:620px}
-.bulk-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}
+.toolbar-form{display:flex;gap:10px;align-items:center;flex:1;min-width:280px;max-width:720px}
+.bulk-actions,.action-stack{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.bulk-actions{justify-content:flex-end}
 .inline-form{display:inline-flex}
-.table-wrap{overflow:auto;border:1px solid rgba(221,227,238,.94);border-radius:26px;background:#fff}
+.table-wrap{overflow:auto;border:1px solid rgba(230,236,243,.95);border-radius:24px;background:#fff}
 .table-wrap-records{max-height:min(76vh,980px)}
 table{width:100%;border-collapse:separate;border-spacing:0;min-width:940px}
 table.geo-table{min-width:1180px}
-thead th{position:sticky;top:0;z-index:1;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#5f6368;background:#f8faff}
-th,td{padding:16px 14px;border-bottom:1px solid rgba(221,227,238,.88);vertical-align:top}
+thead th{position:sticky;top:0;z-index:1;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#7a889f;background:#f8fbff}
+th,td{padding:16px 14px;border-bottom:1px solid rgba(230,236,243,.92);vertical-align:top}
 tbody tr{transition:background .18s ease}
-tbody tr:hover{background:#f8fbff}
-tbody tr.is-selected{background:#edf4ff}
+tbody tr:hover{background:#fafcff}
+tbody tr.is-selected{background:#f2f7ff}
 tbody tr:last-child td{border-bottom:0}
 .table-check-cell{width:52px;text-align:center}
 .records{display:grid;gap:8px}
-.record-line{padding:9px 11px;border:1px solid #d2e3fc;border-radius:16px;background:#f8fbff;white-space:pre-wrap;word-break:break-all}
-.action-stack{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.record-line{padding:10px 12px;border:1px solid #dce6ff;border-radius:16px;background:#f9fbff;white-space:pre-wrap;word-break:break-all}
 .status-stack{display:grid;gap:6px}
-.pill-success{background:var(--success-soft);border-color:#c7e7cf;color:var(--success)}
-.pill-danger{background:var(--danger-soft);border-color:#f4c7c3;color:var(--danger)}
-.pill-muted{background:#f8f9fa;border-color:var(--line);color:var(--muted)}
-.modal{position:fixed;inset:0;background:rgba(32,33,36,.28);display:none;align-items:center;justify-content:center;padding:22px;z-index:60}
+.pill-success{background:var(--success-soft);border-color:#c8f2ea;color:#0ea989}
+.pill-danger{background:var(--danger-soft);border-color:#ffd2c8;color:#db6f50}
+.pill-muted{background:#fbfcfe;border-color:var(--line);color:var(--muted)}
+.country-chip-list{display:flex;flex-wrap:wrap;gap:8px}
+.country-chip{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:999px;background:#fbfcff;border:1px solid #e4ebf6;font-size:12px;font-weight:800;color:var(--text)}
+.country-main{display:flex;align-items:center;gap:12px}
+.country-main strong{display:block}
+.country-main small{display:block;margin-top:2px;color:var(--muted);font-size:12px}
+.country-flag{font-size:22px}
+.config-box{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:18px}
+.config-row{display:grid;gap:6px;padding:14px 16px;border-radius:20px;background:#fff;border:1px solid #eef2f7}
+.config-row span{font-size:12px;color:#7a889f;text-transform:uppercase;letter-spacing:.08em;font-weight:900}
+.config-row strong{font-size:13px;word-break:break-all}
+.modal{position:fixed;inset:0;background:rgba(42,53,71,.28);display:none;align-items:center;justify-content:center;padding:22px;z-index:60}
 .modal.open{display:flex}
 .modal-card{width:min(760px,100%);background:#fff;border:1px solid var(--line);border-radius:30px;box-shadow:var(--shadow);padding:24px}
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
 .modal-header h3{margin:0;font-size:24px;letter-spacing:-.02em}
-.icon-btn{width:44px;height:44px;border-radius:16px;border:1px solid var(--line);background:#fff;color:var(--text);font-size:24px;cursor:pointer}
+.icon-btn{width:44px;height:44px;border-radius:16px;border:1px solid var(--line);background:#fff;color:var(--text);font-size:24px;cursor:pointer;display:grid;place-items:center}
 .modal-intro{margin:-4px 0 18px;color:var(--muted);line-height:1.8}
-.modal-scope{display:grid;gap:4px;margin:-4px 0 18px;padding:15px 16px;border-radius:20px;background:var(--primary-soft);border:1px solid #d2e3fc}
+.modal-scope{display:grid;gap:4px;margin:-4px 0 18px;padding:15px 16px;border-radius:20px;background:var(--primary-soft);border:1px solid #d7e2ff}
 .modal-scope span{font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--primary-strong)}
 .modal-scope strong{font-size:18px}
 .modal-scope small{color:var(--muted);line-height:1.6}
 .grid-two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .modal-footer{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;flex-wrap:wrap}
 .hint{font-size:13px;color:var(--muted);line-height:1.7;padding-top:12px}
-@media (max-width:1200px){.hero,.zone-header,.metric-grid{grid-template-columns:1fr}.zone-badges,.zone-actions,.rule-summary{justify-content:flex-start}}
-@media (max-width:960px){.layout{grid-template-columns:1fr}.sidebar{position:relative;height:auto;border-right:0;border-bottom:1px solid rgba(221,227,238,.9)}.content{padding:18px}.workspace-topbar,.table-toolbar{flex-direction:column;align-items:stretch}.toolbar-form{max-width:none}.grid-two,.hero-grid,.metric-grid{grid-template-columns:1fr}}
+[dir="rtl"] .layout{grid-template-columns:minmax(0,1fr) 320px}
+[dir="rtl"] .sidebar{order:2}
+[dir="rtl"] .app-stage{order:1}
+[dir="rtl"] .menu-card{inset-inline-end:auto;inset-inline-start:0}
+@media (max-width:1280px){.workspace-hero{grid-template-columns:1fr}.hero-actions,.rule-summary{justify-content:flex-start}.config-box{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:1080px){.app-body{padding:18px}.layout{grid-template-columns:1fr}.sidebar{position:relative;top:0;height:auto}.app-header{flex-direction:column;align-items:stretch}.app-header-copy h1{font-size:36px}.toolbar-form{max-width:none}.hero-side,.metric-grid,.grid-two{grid-template-columns:1fr}}
+@media (max-width:720px){.sidebar-panel,.config-box,.panel{border-radius:24px}.app-header-actions,.table-toolbar,.bulk-actions{justify-content:flex-start}.menu-card{width:min(320px,calc(100vw - 36px))}.config-box{grid-template-columns:1fr}.toolbar-form{flex-direction:column;align-items:stretch}.zone-list{max-height:none}}
 CSS;
 }
 
@@ -3790,6 +4148,7 @@ function syncBodyModalState(){document.body.classList.toggle('modal-active',!!do
 function openModal(id){const el=document.getElementById(id);if(el){el.classList.add('open');el.setAttribute('aria-hidden','false');syncBodyModalState();}}
 function closeModal(id){const el=document.getElementById(id);if(el){el.classList.remove('open');el.setAttribute('aria-hidden','true');syncBodyModalState();}}
 function closeAllModals(){document.querySelectorAll('.modal.open').forEach(el=>{el.classList.remove('open');el.setAttribute('aria-hidden','true');});syncBodyModalState();}
+function closeAllMenus(except=null){document.querySelectorAll('.menu-dropdown[open]').forEach(el=>{if(el!==except){el.removeAttribute('open');}});}
 function toggleZoneKindFields(kind){
   const secondaryKinds=['Slave','Consumer'];
   const isSecondary=secondaryKinds.includes(kind);
@@ -3954,8 +4313,15 @@ document.addEventListener('change',function(event){
 document.addEventListener('click',function(event){
   const target=event.target;
   if(target instanceof HTMLElement && target.classList.contains('modal')){closeModal(target.id);}
+  document.querySelectorAll('.menu-dropdown[open]').forEach(menu=>{
+    if(!menu.contains(event.target)){menu.removeAttribute('open');}
+  });
 });
-window.addEventListener('keydown',function(event){if(event.key==='Escape'){closeAllModals();}});
+document.addEventListener('toggle',function(event){
+  const target=event.target;
+  if(target instanceof HTMLDetailsElement && target.classList.contains('menu-dropdown') && target.open){closeAllMenus(target);}
+},true);
+window.addEventListener('keydown',function(event){if(event.key==='Escape'){closeAllModals();closeAllMenus();}});
 document.addEventListener('DOMContentLoaded',initializeWorkspaceState);
 </script>
 HTML;
