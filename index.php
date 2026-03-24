@@ -586,32 +586,11 @@ function renderLoginPage(): never
     echo '<style>' . baseCss() . loginCss() . '</style>';
     echo '</head><body class="login-body">';
     echo '<div class="login-shell">';
-    echo '<section class="login-showcase">';
+    echo '<section class="login-card">';
     echo '<div class="login-brand">';
     echo '<div class="brand-mark">' . hidataLogoSvg('hidata-logo') . '</div>';
-    echo '<div>';
     echo '<div class="brand-title">HiData</div>';
-    echo '<p class="login-brand-copy">PowerDNS, GeoDNS, country match lists, and safer DNS operations in one modern control surface.</p>';
     echo '</div>';
-    echo '</div>';
-    echo '<div class="login-showcase-card">';
-    echo '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('spark') . '</span> Modernized workspace</span>';
-    echo '<h1 class="login-title">A cleaner shell for busy DNS work.</h1>';
-    echo '<p class="login-copy">The panel now follows a sharper dashboard rhythm: stronger hierarchy, calmer cards, clearer actions, and space for language switching including فارسی.</p>';
-    echo '<div class="login-feature-list">';
-    echo '<div class="login-feature"><span class="feature-icon">' . uiIconSvg('globe') . '</span><div><strong>Zone-first navigation</strong><small>Move between domains, GeoDNS, and records without losing context.</small></div></div>';
-    echo '<div class="login-feature"><span class="feature-icon">' . uiIconSvg('map') . '</span><div><strong>Geo routing focus</strong><small>Country match rules and fallback pools are easier to read at a glance.</small></div></div>';
-    echo '<div class="login-feature"><span class="feature-icon">' . uiIconSvg('shield') . '</span><div><strong>Safer operations</strong><small>Read-only mode, sync actions, and destructive changes stay visually obvious.</small></div></div>';
-    echo '</div>';
-    echo '</div>';
-    echo '</section>';
-    echo '<section class="login-card">';
-    echo '<div class="login-card-head">';
-    echo '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('lock') . '</span> Secure access</span>';
-    echo '<h2>Sign in to continue</h2>';
-    echo '<p>Authenticate to manage zones, records, and country-aware DNS routing.</p>';
-    echo '</div>';
-    echo '<div class="login-toolbar">' . renderLanguageMenu() . '</div>';
     if ($flash) {
         echo renderFlash($flash);
     }
@@ -622,16 +601,14 @@ function renderLoginPage(): never
     echo '<input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '">';
     echo '<input type="hidden" name="action" value="login">';
     echo '<div class="field-shell">';
-    echo '<label for="login_username">Username</label>';
     echo '<span class="field-icon">' . uiIconSvg('user') . '</span>';
     echo '<input class="input login-input" id="login_username" type="text" name="username" aria-label="Username" autocomplete="username" required autofocus>';
     echo '</div>';
     echo '<div class="field-shell">';
-    echo '<label for="login_password">Password</label>';
     echo '<span class="field-icon">' . uiIconSvg('lock') . '</span>';
     echo '<input class="input login-input" id="login_password" type="password" name="password" aria-label="Password" autocomplete="current-password" required>';
     echo '</div>';
-    echo '<button class="btn btn-primary btn-block login-submit" type="submit" aria-label="Sign in">' . uiIconSvg('arrow-right', 'submit-icon') . '<span>Sign in</span></button>';
+    echo '<button class="btn btn-primary btn-block login-submit" type="submit" aria-label="Sign in">' . uiIconSvg('arrow-right', 'submit-icon') . '</button>';
     echo '</form>';
     echo '</section></div></body></html>';
     exit;
@@ -3247,14 +3224,7 @@ function renderPage(array $data): void
     echo '<div class="sidebar-panel sidebar-brand-panel">';
     echo '<div class="brand">';
     echo '<div class="brand-logo">' . hidataLogoSvg('hidata-logo') . '</div>';
-    echo '<div><div class="brand-name">HiData</div>';
-    echo '<div class="brand-tag">Modernized GeoDNS manager</div></div>';
-    echo '</div>';
-    echo '<div class="sidebar-hero-copy">';
-    echo '<span class="sidebar-kicker">Control Surface</span>';
-    echo '<p>' . ($currentZone
-        ? 'Focused on <strong>' . h($currentZoneDisplayName) . '</strong>. Jump between GeoDNS, records, and country matching from one shell.'
-        : 'Browse every domain, keep custom country match lists tidy, and manage DNS workflows from a cleaner admin shell.') . '</p>';
+    echo '<div class="brand-name">HiData</div>';
     echo '</div>';
     echo '</div>';
 
@@ -3305,11 +3275,7 @@ function renderPage(array $data): void
     echo '<div class="app-stage">';
     echo '<header class="app-header">';
     echo '<div class="app-header-copy">';
-    echo '<span class="app-kicker">HiData GeoDNS Manager</span>';
-    echo '<h1>' . ($currentZone ? h($currentZoneDisplayName) : 'Modern DNS dashboard') . '</h1>';
-    echo '<p>' . ($currentZone
-        ? 'Everything for this domain lives below: RRsets, GeoDNS routing, imports, exports, rectify, and country-based matcher data.'
-        : 'Use the refreshed panel to create zones, browse domains, and keep the country CIDR database ready for GeoDNS routing.') . '</p>';
+    echo '<h1>' . ($currentZone ? h($currentZoneDisplayName) : 'HiData') . '</h1>';
     echo '</div>';
     echo '<div class="app-header-actions">';
     if ($canCreateZones) {
@@ -3377,20 +3343,13 @@ function renderWorkspaceContent(array $data): string
     if (!$currentZone || !$zoneDetails) {
         echo '<section class="panel workspace-hero hero-panel" id="workspace-start">';
         echo '<div class="hero-copy">';
-        echo '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('dashboard') . '</span> Starter workspace</span>';
-        echo '<h2 class="hero-heading">Create the main domain first, then manage records, GeoDNS, and country matching from here.</h2>';
-        echo '<p class="hero-text">This redesign keeps the existing PHP logic intact, but gives you a calmer dashboard shell with stronger hierarchy, softer cards, icon-led actions, and a proper language menu that now includes فارسی.</p>';
-        echo '<div class="hero-feature-list">';
-        echo '<div class="hero-feature"><span class="feature-icon">' . uiIconSvg('globe') . '</span><div><strong>Zone inventory</strong><small>Browse every domain from the left rail and jump straight into the workspace.</small></div></div>';
-        echo '<div class="hero-feature"><span class="feature-icon">' . uiIconSvg('map') . '</span><div><strong>GeoDNS focus</strong><small>Country pools, health checks, and sync state are easier to scan.</small></div></div>';
-        echo '<div class="hero-feature"><span class="feature-icon">' . uiIconSvg('database') . '</span><div><strong>Country matcher DB</strong><small>Custom CIDR entries stay visible even before a domain is selected.</small></div></div>';
-        echo '</div>';
+        echo '<h2 class="hero-heading">Domains</h2>';
         echo '</div>';
         echo '<div class="hero-side">';
-        echo renderMetricCard('globe', 'Domains', (string)$zoneCount, 'Main domain projects managed here', 'tone-blue');
-        echo renderMetricCard('map', 'GeoDNS Rules', (string)(int)($geoRuleStats['total_rules'] ?? 0), 'Stored across all domains', 'tone-sky');
-        echo renderMetricCard('database', 'CIDR Countries', (string)(int)($countryIpSetStats['country_count'] ?? 0), 'Custom matcher entries available', 'tone-gold');
-        echo renderMetricCard('shield', 'Mode', ($config['features']['read_only'] ?? false) ? 'Read only' : 'Live write', 'Backups ' . (($config['features']['backup_before_write'] ?? false) ? 'enabled' : 'disabled'), 'tone-emerald');
+        echo renderMetricCard('globe', 'Domains', (string)$zoneCount, 'Projects', 'tone-blue');
+        echo renderMetricCard('map', 'GeoDNS', (string)(int)($geoRuleStats['total_rules'] ?? 0), 'Rules', 'tone-sky');
+        echo renderMetricCard('database', 'CIDR', (string)(int)($countryIpSetStats['country_count'] ?? 0), 'Countries', 'tone-gold');
+        echo renderMetricCard('shield', 'Mode', ($config['features']['read_only'] ?? false) ? 'Read only' : 'Writable', 'State', 'tone-emerald');
         echo '</div>';
         echo '</section>';
 
@@ -3409,16 +3368,13 @@ function renderWorkspaceContent(array $data): string
 
     echo '<section class="panel workspace-hero zone-hero" id="workspace-start">';
     echo '<div class="hero-copy">';
-    echo '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('globe') . '</span> Active domain workspace</span>';
     echo '<h2 class="hero-heading">' . h($currentZoneDisplayName) . '</h2>';
-    echo '<p class="hero-text">Manage authoritative records, GeoDNS answers, imports, exports, rectify operations, and country-aware match data without leaving this domain workspace.</p>';
     echo '<div class="hero-badge-row">';
     echo '<span class="pill">' . uiIconSvg('layers', 'badge-icon') . '<span>Type ' . h((string)($zoneDetails['kind'] ?? 'Unknown')) . '</span></span>';
     echo '<span class="pill">' . uiIconSvg('shield', 'badge-icon') . '<span>DNSSEC ' . (!empty($zoneDetails['dnssec']) ? 'On' : 'Off') . '</span></span>';
     echo '<span class="pill">' . uiIconSvg('sync', 'badge-icon') . '<span>API Rectify ' . (!empty($zoneDetails['api_rectify']) ? 'On' : 'Off') . '</span></span>';
     echo '<span class="pill">' . uiIconSvg('code', 'badge-icon') . '<span>Serial ' . h((string)($zoneDetails['serial'] ?? '-')) . '</span></span>';
     echo '</div>';
-    echo '<div class="hero-note">Edited serial ' . h((string)($zoneDetails['edited_serial'] ?? '-')) . '. Use <code>@</code> whenever you mean the root host of this zone.</div>';
     echo '</div>';
     echo '<div class="hero-actions">';
     if ($canModifyCurrentZone) {
@@ -3455,17 +3411,11 @@ function renderWorkspaceContent(array $data): string
     echo '</div>';
     echo '</section>';
 
-    echo '<div class="jump-grid">';
-    echo '<a class="jump-chip" href="#geo-rules"><span class="jump-chip-icon">' . uiIconSvg('map') . '</span><span>GeoDNS</span></a>';
-    echo '<a class="jump-chip" href="#records"><span class="jump-chip-icon">' . uiIconSvg('records') . '</span><span>Records</span></a>';
-    echo '<a class="jump-chip" href="#country-cidr"><span class="jump-chip-icon">' . uiIconSvg('database') . '</span><span>Country DB</span></a>';
-    echo '</div>';
-
     echo '<section class="metric-grid">';
-    echo renderMetricCard('records', 'RRsets', (string)$rrsetCount, $recordCount . ' record values currently visible', 'tone-blue');
-    echo renderMetricCard('map', 'GeoDNS', (string)count($geoRules), 'Country-based answers in this domain', 'tone-sky');
-    echo renderMetricCard('server', 'Nameservers', (string)$nameserverCount, 'Authority hosts attached to the domain', 'tone-gold');
-    echo renderMetricCard('shield', 'Write Mode', ($config['features']['read_only'] ?? false) ? 'Read only' : 'Writable', 'Backups ' . (($config['features']['backup_before_write'] ?? false) ? 'enabled' : 'disabled'), 'tone-emerald');
+    echo renderMetricCard('records', 'RRsets', (string)$rrsetCount, 'Visible', 'tone-blue');
+    echo renderMetricCard('map', 'GeoDNS', (string)count($geoRules), 'Rules', 'tone-sky');
+    echo renderMetricCard('server', 'NS', (string)$nameserverCount, 'Nameservers', 'tone-gold');
+    echo renderMetricCard('shield', 'Mode', ($config['features']['read_only'] ?? false) ? 'Read only' : 'Writable', 'State', 'tone-emerald');
     echo '</section>';
 
     echo renderGeoRulesSection($config, $zoneDetails, $geoRules, $canModifyCurrentZone);
@@ -3473,9 +3423,7 @@ function renderWorkspaceContent(array $data): string
     echo '<section class="panel records-panel section-panel" id="records">';
     echo '<div class="section-head">';
     echo '<div>';
-    echo '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('records') . '</span> RRset manager</span>';
     echo '<h2 class="section-title">Records</h2>';
-    echo '<p class="section-copy">Filter large zones quickly, select multiple rows, and update or remove RRsets without reloading the whole page.</p>';
     echo '</div>';
     echo '<div class="rule-summary"><span class="pill">Values ' . $recordCount . '</span><span class="pill">Showing ' . $rrsetCount . ' RRsets</span></div>';
     echo '</div>';
@@ -3594,9 +3542,7 @@ function renderCountryIpDatabaseSection(array $countryIpSets, array $stats, bool
     $html = '<section class="panel section-panel" id="country-cidr">';
     $html .= '<div class="section-head">';
     $html .= '<div>';
-    $html .= '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('database') . '</span> Custom matcher</span>';
     $html .= '<h2 class="section-title">Country CIDR Database</h2>';
-    $html .= '<p class="section-copy">Manage country-to-CIDR mappings here. GeoDNS rules automatically use these CIDR lists through PowerDNS Lua <code>netmask()</code> matching, and any country code without a custom list falls back to the default backend GeoIP lookup.</p>';
     $html .= '</div>';
     $html .= '<div class="rule-summary"><span class="pill">Countries ' . (int)($stats['country_count'] ?? 0) . '</span><span class="pill">CIDRs ' . (int)($stats['cidr_count'] ?? 0) . '</span>';
     if ($canManageCountryDb) {
@@ -3608,7 +3554,7 @@ function renderCountryIpDatabaseSection(array $countryIpSets, array $stats, bool
     $html .= '</div>';
 
     if ($countryIpSets === []) {
-        $html .= '<div class="empty">No custom country CIDR entries exist yet. Create <code>IR</code> here, paste the Iran CIDR list, and all GeoDNS rules using <code>IR</code> will match against this managed list after the next sync.</div>';
+        $html .= '<div class="empty">No country CIDR entries.</div>';
         $html .= '</section>';
         return $html;
     }
@@ -3696,15 +3642,13 @@ function renderGeoRulesSection(array $config, array $zoneDetails, array $geoRule
     $html = '<section class="panel section-panel" id="geo-rules">';
     $html .= '<div class="section-head">';
     $html .= '<div>';
-    $html .= '<span class="section-kicker"><span class="section-kicker-icon">' . uiIconSvg('map') . '</span> Geo routing</span>';
     $html .= '<h2 class="section-title">GeoDNS Rules</h2>';
-    $html .= '<p class="section-copy">Geo decisions live inside this domain project. Use them when <code>@</code>, <code>www</code>, or any other host should answer differently for Iran versus the default world route.</p>';
     $html .= '</div>';
     $html .= '<div class="rule-summary"><span class="pill">Rules ' . count($geoRules) . '</span></div>';
     $html .= '</div>';
 
     if ($geoRules === []) {
-        $html .= '<div class="empty">No GeoDNS rules exist for this domain yet. Add one for <code>@</code> or <code>www</code> to send <code>IR</code> to the Iran server and the default path to Europe.</div>';
+        $html .= '<div class="empty">No GeoDNS rules.</div>';
         $html .= '</section>';
         return $html;
     }
@@ -3943,85 +3887,63 @@ CSS;
 function loginCss(): string
 {
     return <<<'CSS'
-.login-body{min-height:100vh;display:grid;place-items:center;padding:32px}
-.login-shell{width:min(1180px,100%);display:grid;grid-template-columns:minmax(0,1.1fr) minmax(360px,.9fr);gap:24px;align-items:stretch}
-.login-showcase,.login-card{background:rgba(255,255,255,.9);border:1px solid rgba(230,236,243,.95);backdrop-filter:blur(18px);border-radius:32px;box-shadow:var(--shadow)}
-.login-showcase{padding:32px;display:grid;gap:24px;position:relative;overflow:hidden}
-.login-showcase::before{content:"";position:absolute;inset:-120px auto auto -80px;width:260px;height:260px;border-radius:50%;background:rgba(93,135,255,.12)}
-.login-showcase::after{content:"";position:absolute;inset:auto -80px -120px auto;width:280px;height:280px;border-radius:50%;background:rgba(19,222,185,.11)}
-.login-brand{display:flex;align-items:center;gap:18px;position:relative;z-index:1}
-.brand-mark{width:92px;height:92px;border-radius:28px;background:linear-gradient(145deg,#324dff 0%,#5d87ff 48%,#13deb9 100%);color:#fff;display:grid;place-items:center;box-shadow:0 30px 60px rgba(93,135,255,.22)}
-.brand-mark .hidata-logo{width:48px;height:56px}
-.brand-title{font-size:42px;font-weight:900;line-height:1}
-.login-brand-copy{margin:10px 0 0;color:var(--muted);line-height:1.8;max-width:520px}
-.login-showcase-card{position:relative;z-index:1;display:grid;gap:18px}
-.login-title{margin:0;font-size:40px;line-height:1.05;letter-spacing:-.04em;max-width:620px}
-.login-copy{margin:0;color:var(--muted);line-height:1.9;max-width:640px}
-.login-feature-list{display:grid;gap:14px}
-.login-feature{display:flex;gap:14px;align-items:flex-start;padding:16px 18px;border-radius:22px;border:1px solid rgba(230,236,243,.95);background:rgba(255,255,255,.84)}
-.login-feature strong{display:block;margin-bottom:6px}
-.login-feature small{display:block;color:var(--muted);line-height:1.7}
-.feature-icon{width:42px;height:42px;border-radius:14px;background:var(--primary-soft);color:var(--primary-strong);display:grid;place-items:center;flex:none}
-.login-card{padding:28px;display:grid;gap:18px;align-content:start}
-.login-card-head{display:grid;gap:8px}
-.login-card-head h2{margin:0;font-size:30px;letter-spacing:-.03em}
-.login-card-head p{margin:0;color:var(--muted);line-height:1.8}
-.login-toolbar{display:flex;justify-content:flex-end}
-.login-form{display:grid;gap:14px}
+.login-body{min-height:100vh;display:grid;place-items:center;padding:20px}
+.login-shell{width:min(380px,100%)}
+.login-card{background:rgba(255,255,255,.94);border:1px solid rgba(230,236,243,.95);border-radius:26px;box-shadow:var(--shadow);padding:28px 24px;display:grid;gap:18px}
+.login-brand{display:grid;justify-items:center;gap:14px}
+.brand-mark{width:86px;height:86px;border-radius:24px;background:linear-gradient(145deg,#324dff 0%,#5d87ff 48%,#13deb9 100%);color:#fff;display:grid;place-items:center;box-shadow:0 22px 40px rgba(93,135,255,.2)}
+.brand-mark .hidata-logo{width:44px;height:50px}
+.brand-title{font-size:38px;font-weight:900;line-height:1}
+.login-form{display:grid;gap:12px}
 .field-shell{position:relative}
-.field-icon{position:absolute;inset-block:auto 15px;inset-inline-start:14px;display:grid;place-items:center;color:#7c8ca7;pointer-events:none}
-.login-input{padding-inline-start:48px;height:56px;border-radius:18px}
-.login-submit{height:56px;border-radius:18px}
+.field-icon{position:absolute;inset-block:0;inset-inline-start:14px;display:grid;place-items:center;color:#7c8ca7;pointer-events:none}
+.login-input{padding-inline-start:48px;height:52px;border-radius:16px}
+.login-submit{height:52px;border-radius:16px}
 .submit-icon{width:22px;height:22px}
-@media (max-width:980px){.login-shell{grid-template-columns:1fr}.login-title{font-size:34px}}
-@media (max-width:640px){.login-body{padding:18px}.login-showcase,.login-card{padding:22px}.brand-mark{width:80px;height:80px}.brand-title{font-size:34px}.login-title{font-size:30px}}
+@media (max-width:640px){.login-body{padding:16px}.login-card{padding:24px 20px}.brand-mark{width:78px;height:78px}.brand-title{font-size:34px}}
 CSS;
 }
 
 function appCss(): string
 {
     return <<<'CSS'
-.app-body{padding:24px}
-.layout{display:grid;grid-template-columns:320px minmax(0,1fr);gap:24px;min-height:calc(100vh - 48px)}
-.sidebar{position:sticky;top:24px;height:calc(100vh - 48px);display:grid;align-content:start;gap:16px}
-.sidebar-panel,.config-box,.panel{background:rgba(255,255,255,.94);border:1px solid rgba(230,236,243,.95);border-radius:28px;box-shadow:var(--shadow)}
-.sidebar-panel{padding:18px}
-.sidebar-brand-panel{padding:20px}
+.app-body{padding:16px}
+.layout{display:grid;grid-template-columns:288px minmax(0,1fr);gap:16px;min-height:calc(100vh - 32px)}
+.sidebar{position:sticky;top:16px;height:calc(100vh - 32px);display:grid;align-content:start;gap:12px}
+.sidebar-panel,.config-box,.panel{background:rgba(255,255,255,.94);border:1px solid rgba(230,236,243,.95);border-radius:22px;box-shadow:var(--shadow)}
+.sidebar-panel{padding:14px}
+.sidebar-brand-panel{padding:16px}
 .brand{display:flex;align-items:center;gap:14px}
-.brand-logo{width:64px;height:64px;border-radius:22px;background:linear-gradient(145deg,#324dff 0%,#5d87ff 58%,#13deb9 100%);display:grid;place-items:center;color:#fff;box-shadow:0 24px 40px rgba(93,135,255,.24)}
-.brand-logo .hidata-logo{width:32px;height:36px}
-.brand-name{font-size:24px;font-weight:900}
-.brand-tag{font-size:13px;color:var(--muted);margin-top:4px}
-.sidebar-hero-copy{display:grid;gap:10px;margin-top:18px}
-.sidebar-kicker,.sidebar-section-title{font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#6e7b93}
-.sidebar-hero-copy p{margin:0;color:var(--muted);line-height:1.8}
+.brand-logo{width:52px;height:52px;border-radius:18px;background:linear-gradient(145deg,#324dff 0%,#5d87ff 58%,#13deb9 100%);display:grid;place-items:center;color:#fff;box-shadow:0 18px 30px rgba(93,135,255,.2)}
+.brand-logo .hidata-logo{width:26px;height:30px}
+.brand-name{font-size:22px;font-weight:900;line-height:1}
+.sidebar-kicker,.sidebar-section-title{font-size:11px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#6e7b93}
 .sidebar-nav-card{display:grid;gap:10px}
-.shell-nav-link{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:18px;border:1px solid transparent;background:transparent;font-weight:800;color:var(--text);transition:all .18s ease}
+.shell-nav-link{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:16px;border:1px solid transparent;background:transparent;font-weight:800;color:var(--text);transition:all .18s ease}
 .shell-nav-link:hover{background:var(--panel-2);border-color:#deebff;color:var(--primary-strong)}
-.shell-nav-icon{width:40px;height:40px;border-radius:14px;background:var(--panel-2);border:1px solid #e7eef8;color:var(--primary-strong);display:grid;place-items:center;flex:none}
+.shell-nav-icon{width:34px;height:34px;border-radius:12px;background:var(--panel-2);border:1px solid #e7eef8;color:var(--primary-strong);display:grid;place-items:center;flex:none}
 .sidebar-search-card,.sidebar-domain-panel{display:grid;gap:12px}
 .search-form{display:grid;gap:10px}
 .search-input-shell{position:relative;flex:1}
 .input-icon{position:absolute;inset-block:0;inset-inline-start:16px;display:grid;place-items:center;color:#8091ac;pointer-events:none}
 .toolbar-input{padding-inline-start:46px}
-.zone-list{display:flex;flex-direction:column;gap:10px;max-height:38vh;overflow:auto;padding-inline-end:4px}
-.zone-item{display:grid;gap:6px;background:linear-gradient(180deg,#ffffff 0%,#fbfdff 100%);border:1px solid transparent;border-radius:22px;padding:14px 16px;transition:border-color .18s ease,background .18s ease,transform .18s ease,box-shadow .18s ease;box-shadow:var(--shadow-xs)}
+.zone-list{display:flex;flex-direction:column;gap:8px;max-height:34vh;overflow:auto;padding-inline-end:4px}
+.zone-item{display:grid;gap:4px;background:linear-gradient(180deg,#ffffff 0%,#fbfdff 100%);border:1px solid transparent;border-radius:18px;padding:12px 14px;transition:border-color .18s ease,background .18s ease,transform .18s ease,box-shadow .18s ease;box-shadow:var(--shadow-xs)}
 .zone-item:hover{border-color:#d9e5ff;background:#f9fbff;transform:translateY(-1px)}
 .zone-item.active{background:linear-gradient(180deg,#f4f8ff 0%,#eef4ff 100%);border-color:#cfe0ff;box-shadow:0 16px 26px rgba(93,135,255,.12)}
 .zone-name{font-weight:800;word-break:break-all}
 .zone-meta{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
 .zone-icon{width:14px;height:14px}
-.app-stage{min-width:0;display:grid;gap:20px;align-content:start}
-.app-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:6px 6px 0}
-.app-header-copy{display:grid;gap:8px}
+.app-stage{min-width:0;display:grid;gap:16px;align-content:start}
+.app-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 2px 0}
+.app-header-copy{display:grid;gap:4px}
 .app-kicker,.section-kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--primary-strong)}
-.app-header-copy h1{margin:0;font-size:42px;line-height:1.02;letter-spacing:-.04em}
-.app-header-copy p{margin:0;max-width:860px;color:var(--muted);line-height:1.8}
-.app-header-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}
+.app-header-copy h1{margin:0;font-size:28px;line-height:1.05;letter-spacing:-.03em}
+.app-header-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .menu-dropdown{position:relative}
 .menu-dropdown>summary{list-style:none}
 .menu-dropdown>summary::-webkit-details-marker{display:none}
-.menu-trigger{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:18px;background:rgba(255,255,255,.92);border:1px solid var(--line);box-shadow:var(--shadow-xs);cursor:pointer;font-weight:800}
+.menu-trigger{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:16px;background:rgba(255,255,255,.92);border:1px solid var(--line);box-shadow:var(--shadow-xs);cursor:pointer;font-weight:800}
 .menu-trigger-text{white-space:nowrap}
 .menu-caret{width:16px;height:16px;color:#8191aa}
 .menu-card{position:absolute;inset-block-start:calc(100% + 10px);inset-inline-end:0;width:280px;background:#fff;border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);padding:12px;display:grid;gap:8px;z-index:20}
@@ -4043,45 +3965,35 @@ function appCss(): string
 .menu-row span{font-size:12px;font-weight:800;color:#7b89a2;text-transform:uppercase;letter-spacing:.06em}
 .menu-row strong{font-size:13px;word-break:break-word;text-align:end}
 .menu-form{padding-top:4px}
-.content{display:grid;gap:20px;position:relative;min-width:0}
+.content{display:grid;gap:16px;position:relative;min-width:0}
 .content.is-busy::after{content:"";position:absolute;inset:0;background:rgba(245,247,251,.64);backdrop-filter:blur(4px);border-radius:30px;z-index:5}
 .content.is-busy::before{content:"Updating workspace...";position:absolute;inset-block-start:18px;inset-inline-end:22px;padding:10px 14px;border-radius:14px;background:#fff;border:1px solid var(--line);box-shadow:var(--shadow-xs);font-size:13px;font-weight:800;color:var(--muted);z-index:6}
-.panel{padding:24px}
-.workspace-hero{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:20px;align-items:start}
+.panel{padding:18px}
+.workspace-hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center}
 .hero-panel,.zone-hero{background:
 radial-gradient(circle at top right,rgba(93,135,255,.10),transparent 24%),
 linear-gradient(180deg,#ffffff 0%,#f8fbff 100%)}
-.hero-copy{display:grid;gap:14px}
+.hero-copy{display:grid;gap:10px}
 .section-kicker-icon,.jump-chip-icon,.metric-icon,.feature-icon,.shell-nav-icon,.badge-icon{display:grid;place-items:center}
 .section-kicker-icon,.jump-chip-icon{width:20px;height:20px}
-.hero-heading{margin:0;font-size:34px;line-height:1.05;letter-spacing:-.04em}
-.hero-text{margin:0;color:var(--muted);line-height:1.9}
-.hero-feature-list{display:grid;gap:12px}
-.hero-feature{display:flex;gap:14px;align-items:flex-start;padding:14px 16px;border-radius:20px;background:#fff;border:1px solid #edf2f8}
-.hero-feature strong{display:block;margin-bottom:5px}
-.hero-feature small{display:block;color:var(--muted);line-height:1.7}
-.feature-icon{width:42px;height:42px;border-radius:14px;background:var(--primary-soft);color:var(--primary-strong);flex:none}
-.hero-side,.metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-.hero-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;align-content:flex-start;gap:12px}
+.hero-heading{margin:0;font-size:26px;line-height:1.08;letter-spacing:-.03em}
+.hero-side,.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.hero-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;align-content:flex-start;gap:8px}
 .hero-badge-row{display:flex;flex-wrap:wrap;gap:10px}
 .badge-icon{width:16px;height:16px}
-.hero-note{color:var(--muted);line-height:1.8}
-.jump-grid{display:flex;flex-wrap:wrap;gap:10px}
-.jump-chip{display:inline-flex;align-items:center;gap:10px;padding:12px 16px;border-radius:18px;background:rgba(255,255,255,.94);border:1px solid var(--line);box-shadow:var(--shadow-xs);font-weight:800}
-.jump-chip:hover{border-color:#d8e4ff;color:var(--primary-strong)}
-.metric-card{background:#fff;border:1px solid var(--line);border-radius:24px;padding:18px;display:grid;gap:10px;box-shadow:var(--shadow-xs)}
+.metric-card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:14px;display:grid;gap:8px;box-shadow:var(--shadow-xs)}
 .metric-card-top{display:flex;align-items:center;gap:12px}
-.metric-icon{width:42px;height:42px;border-radius:14px;background:var(--panel-2);color:var(--primary-strong);flex:none}
+.metric-icon{width:36px;height:36px;border-radius:12px;background:var(--panel-2);color:var(--primary-strong);flex:none}
 .metric-label{font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#73839c}
-.metric-value{font-size:30px;line-height:1.08;letter-spacing:-.03em;word-break:break-word}
-.metric-note{display:block;color:var(--muted);line-height:1.7}
+.metric-value{font-size:24px;line-height:1.08;letter-spacing:-.03em;word-break:break-word}
+.metric-note{display:block;color:var(--muted);line-height:1.5;font-size:12px}
 .tone-blue .metric-icon{background:var(--primary-soft)}
 .tone-sky .metric-icon{background:#eef8ff;color:#2d76f9}
 .tone-gold .metric-icon{background:var(--warning-soft);color:#cc8a12}
 .tone-emerald .metric-icon{background:var(--success-soft);color:#0ea989}
 .section-panel{scroll-margin-top:24px}
 .section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
-.section-title{margin:0 0 8px;font-size:28px;letter-spacing:-.03em}
+.section-title{margin:0;font-size:22px;letter-spacing:-.02em}
 .section-copy{margin:0;color:var(--muted);line-height:1.8;max-width:900px}
 .rule-summary{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
 .table-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}
@@ -4112,16 +4024,16 @@ tbody tr:last-child td{border-bottom:0}
 .country-main strong{display:block}
 .country-main small{display:block;margin-top:2px;color:var(--muted);font-size:12px}
 .country-flag{font-size:22px}
-.config-box{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:18px}
-.config-row{display:grid;gap:6px;padding:14px 16px;border-radius:20px;background:#fff;border:1px solid #eef2f7}
+.config-box{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;padding:14px}
+.config-row{display:grid;gap:6px;padding:12px 14px;border-radius:16px;background:#fff;border:1px solid #eef2f7}
 .config-row span{font-size:12px;color:#7a889f;text-transform:uppercase;letter-spacing:.08em;font-weight:900}
 .config-row strong{font-size:13px;word-break:break-all}
 .modal{position:fixed;inset:0;background:rgba(42,53,71,.28);display:none;align-items:center;justify-content:center;padding:22px;z-index:60}
 .modal.open{display:flex}
-.modal-card{width:min(760px,100%);background:#fff;border:1px solid var(--line);border-radius:30px;box-shadow:var(--shadow);padding:24px}
+.modal-card{width:min(760px,100%);background:#fff;border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:20px}
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
-.modal-header h3{margin:0;font-size:24px;letter-spacing:-.02em}
-.icon-btn{width:44px;height:44px;border-radius:16px;border:1px solid var(--line);background:#fff;color:var(--text);font-size:24px;cursor:pointer;display:grid;place-items:center}
+.modal-header h3{margin:0;font-size:20px;letter-spacing:-.02em}
+.icon-btn{width:40px;height:40px;border-radius:14px;border:1px solid var(--line);background:#fff;color:var(--text);font-size:24px;cursor:pointer;display:grid;place-items:center}
 .modal-intro{margin:-4px 0 18px;color:var(--muted);line-height:1.8}
 .modal-scope{display:grid;gap:4px;margin:-4px 0 18px;padding:15px 16px;border-radius:20px;background:var(--primary-soft);border:1px solid #d7e2ff}
 .modal-scope span{font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--primary-strong)}
@@ -4130,13 +4042,13 @@ tbody tr:last-child td{border-bottom:0}
 .grid-two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .modal-footer{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;flex-wrap:wrap}
 .hint{font-size:13px;color:var(--muted);line-height:1.7;padding-top:12px}
-[dir="rtl"] .layout{grid-template-columns:minmax(0,1fr) 320px}
+[dir="rtl"] .layout{grid-template-columns:minmax(0,1fr) 288px}
 [dir="rtl"] .sidebar{order:2}
 [dir="rtl"] .app-stage{order:1}
 [dir="rtl"] .menu-card{inset-inline-end:auto;inset-inline-start:0}
-@media (max-width:1280px){.workspace-hero{grid-template-columns:1fr}.hero-actions,.rule-summary{justify-content:flex-start}.config-box{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:1080px){.app-body{padding:18px}.layout{grid-template-columns:1fr}.sidebar{position:relative;top:0;height:auto}.app-header{flex-direction:column;align-items:stretch}.app-header-copy h1{font-size:36px}.toolbar-form{max-width:none}.hero-side,.metric-grid,.grid-two{grid-template-columns:1fr}}
-@media (max-width:720px){.sidebar-panel,.config-box,.panel{border-radius:24px}.app-header-actions,.table-toolbar,.bulk-actions{justify-content:flex-start}.menu-card{width:min(320px,calc(100vw - 36px))}.config-box{grid-template-columns:1fr}.toolbar-form{flex-direction:column;align-items:stretch}.zone-list{max-height:none}}
+@media (max-width:1280px){.workspace-hero{grid-template-columns:1fr}.hero-actions,.rule-summary{justify-content:flex-start}.hero-side,.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.config-box{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:1080px){.app-body{padding:14px}.layout{grid-template-columns:1fr}.sidebar{position:relative;top:0;height:auto}.app-header{flex-direction:column;align-items:stretch}.app-header-copy h1{font-size:24px}.toolbar-form{max-width:none}.grid-two{grid-template-columns:1fr}}
+@media (max-width:720px){.sidebar-panel,.config-box,.panel{border-radius:18px}.app-header-actions,.table-toolbar,.bulk-actions{justify-content:flex-start}.menu-card{width:min(320px,calc(100vw - 28px))}.config-box,.hero-side,.metric-grid{grid-template-columns:1fr}.toolbar-form{flex-direction:column;align-items:stretch}.zone-list{max-height:none}}
 CSS;
 }
 
