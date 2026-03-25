@@ -1489,12 +1489,20 @@ function buildRrsetPayloadFromPost(string $zoneName): array
 
     $lines = preg_split('/\r\n|\r|\n/', $rawValues) ?: [];
     $records = [];
-    foreach ($lines as $line) {
-        $line = trim($line);
-        if ($line === '') {
-            continue;
+    if ($type === 'SOA') {
+        $soaValue = trim(implode(' ', array_values(array_filter(array_map('trim', $lines), static fn(string $line): bool => $line !== ''))));
+        if ($soaValue === '') {
+            throw new RuntimeException('SOA content is required.');
         }
-        $records[] = ['content' => normalizeRecordContent($type, $line), 'disabled' => false];
+        $records[] = ['content' => normalizeRecordContent($type, $soaValue), 'disabled' => false];
+    } else {
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+            $records[] = ['content' => normalizeRecordContent($type, $line), 'disabled' => false];
+        }
     }
 
     if ($records === []) {
@@ -1502,6 +1510,14 @@ function buildRrsetPayloadFromPost(string $zoneName): array
     }
     if ($type === 'CNAME' && count($records) !== 1) {
         throw new RuntimeException('CNAME RRsets must contain exactly one record value.');
+    }
+    if ($type === 'SOA') {
+        if ($name !== ensureTrailingDot($zoneName)) {
+            throw new RuntimeException('SOA records may only be created at the zone apex (@).');
+        }
+        if (count($records) !== 1) {
+            throw new RuntimeException('SOA RRsets must contain exactly one record value.');
+        }
     }
 
     return [
@@ -1525,6 +1541,7 @@ function normalizeRecordContent(string $type, string $value): string
         'MX' => normalizeMx($value),
         'SRV' => normalizeSrv($value),
         'CAA' => normalizeCaa($value),
+        'SOA' => normalizeSoa($value),
         'TXT', 'SPF' => normalizeTxtLike($value),
         default => $value,
     };
@@ -1598,6 +1615,70 @@ function normalizeCaa(string $value): string
         $rest = '"' . addcslashes(trim($rest, '"'), '"\\') . '"';
     }
     return sprintf('%d %s %s', $flags, $tag, $rest);
+}
+
+function normalizeSoa(string $value): string
+{
+    $clean = preg_replace('/[()]/', ' ', trim($value));
+    $clean = preg_replace('/\s+/', ' ', (string)$clean);
+    $parts = preg_split('/\s+/', trim((string)$clean)) ?: [];
+    if (count($parts) !== 7) {
+        throw new RuntimeException('SOA records must use the format: primary-nameserver responsible-mailbox serial refresh retry expire minimum');
+    }
+
+    [$mname, $rname, $serial, $refresh, $retry, $expire, $minimum] = $parts;
+
+    return sprintf(
+        '%s %s %s %s %s %s %s',
+        normalizeHostnameTarget($mname),
+        normalizeSoaMailbox($rname),
+        normalizeDnsUnsignedNumber($serial, 'SOA serial'),
+        normalizeDnsUnsignedNumber($refresh, 'SOA refresh'),
+        normalizeDnsUnsignedNumber($retry, 'SOA retry'),
+        normalizeDnsUnsignedNumber($expire, 'SOA expire'),
+        normalizeDnsUnsignedNumber($minimum, 'SOA minimum TTL')
+    );
+}
+
+function normalizeSoaMailbox(string $value): string
+{
+    $value = trim($value);
+    if ($value === '') {
+        throw new RuntimeException('SOA responsible mailbox is required.');
+    }
+
+    if (substr_count($value, '@') === 1) {
+        [$localPart, $domainPart] = explode('@', $value, 2);
+        $localPart = trim($localPart);
+        $domainPart = trim($domainPart);
+        if ($localPart === '' || $domainPart === '') {
+            throw new RuntimeException('SOA responsible mailbox must use a valid email address or DNS mailbox name.');
+        }
+        $escapedLocal = str_replace(['\\', '.'], ['\\\\', '\\.'], $localPart);
+        return ensureTrailingDot($escapedLocal . '.' . trim(normalizeHostnameTarget($domainPart), '.'));
+    }
+
+    return normalizeHostnameTarget($value);
+}
+
+function normalizeDnsUnsignedNumber(string $value, string $label): string
+{
+    $value = trim($value);
+    if (!preg_match('/^\d+$/', $value)) {
+        throw new RuntimeException($label . ' must be an unsigned integer.');
+    }
+
+    $normalized = ltrim($value, '0');
+    if ($normalized === '') {
+        $normalized = '0';
+    }
+
+    $maxValue = '4294967295';
+    if (strlen($normalized) > strlen($maxValue) || (strlen($normalized) === strlen($maxValue) && strcmp($normalized, $maxValue) > 0)) {
+        throw new RuntimeException($label . ' must be between 0 and 4294967295.');
+    }
+
+    return $normalized;
 }
 
 function normalizeTxtLike(string $value): string
@@ -3767,17 +3848,19 @@ function buildCountryIpSetEditModal(): string
 
 function manualRecordTypes(): array
 {
-    return ['A', 'AAAA', 'MX', 'CNAME', 'TXT', 'NS', 'PTR', 'SRV', 'CAA', 'SPF'];
+    return ['A', 'AAAA', 'MX', 'CNAME', 'TXT', 'NS', 'SOA', 'PTR', 'SRV', 'CAA', 'SPF'];
 }
 
 function buildAddModal(string $zoneName): string
 {
-    return '<div class="modal" id="addModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Add record</h3><button class="icon-btn" type="button" onclick="closeModal(\'addModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="add_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" name="name" value="@" placeholder="@ or subdomain" required></div><div><label>Type</label><select class="input" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" name="ttl" value="300" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Use one value per line for multi-value RRsets.</div></div></div><label>Content</label><textarea class="textarea" name="content" rows="8" placeholder="185.112.35.197 or 10 mail.example.com." required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'addModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create record</button></div></form></div></div>';
+    $soaExample = 'main1.' . rtrim($zoneName, '.') . '. hostmaster.' . rtrim($zoneName, '.') . '. 2026032501 10800 3600 604800 3600';
+    return '<div class="modal" id="addModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Add record</h3><button class="icon-btn" type="button" onclick="closeModal(\'addModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace" data-record-editor-form="1" data-zone-name="' . h($zoneName) . '"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="add_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" name="name" data-record-host value="@" placeholder="@ or subdomain" required></div><div><label>Type</label><select class="input" name="type" data-record-type-input>' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" name="ttl" value="300" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint" data-record-content-hint>Use one value per line for multi-value RRsets. For SOA, you can paste a single line or a multi-line BIND-style record.</div></div></div><label>Content</label><textarea class="textarea mono" name="content" data-record-content rows="8" placeholder="' . h($soaExample) . '" required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'addModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create record</button></div></form></div></div>';
 }
 
 function buildEditModal(string $zoneName): string
 {
-    return '<div class="modal" id="editModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit record</h3><button class="icon-btn" type="button" onclick="closeModal(\'editModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" id="edit_name" name="name" required></div><div><label>Type</label><select class="input" id="edit_type" name="type">' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" id="edit_ttl" name="ttl" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint">Editing replaces the whole RRset for this host and type.</div></div></div><label>Content</label><textarea class="textarea" id="edit_content" name="content" rows="8" required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'editModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div></form></div></div>';
+    $soaExample = 'main1.' . rtrim($zoneName, '.') . '. hostmaster.' . rtrim($zoneName, '.') . '. 2026032501 10800 3600 604800 3600';
+    return '<div class="modal" id="editModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Edit record</h3><button class="icon-btn" type="button" onclick="closeModal(\'editModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" data-async="workspace" data-record-editor-form="1" data-zone-name="' . h($zoneName) . '"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="update_rrset"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><div class="grid-two"><div><label>Host</label><input class="input" id="edit_name" name="name" data-record-host placeholder="@ or subdomain" required></div><div><label>Type</label><select class="input" id="edit_type" name="type" data-record-type-input>' . recordTypeOptions() . '</select></div><div><label>TTL</label><input class="input" type="number" id="edit_ttl" name="ttl" min="1" max="2147483647" required></div><div><label>Notes</label><div class="hint" data-record-content-hint>Editing replaces the whole RRset for this host and type. SOA must stay on the zone apex and contain exactly one logical record.</div></div></div><label>Content</label><textarea class="textarea mono" id="edit_content" name="content" data-record-content rows="8" placeholder="' . h($soaExample) . '" required></textarea><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'editModal\')">Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div></form></div></div>';
 }
 
 function buildImportModal(string $zoneName): string
@@ -3849,6 +3932,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 code{background:var(--primary-soft);border:1px solid #d7e2ff;border-radius:10px;padding:2px 7px;color:var(--primary-strong)}
 .input,.textarea,select{width:100%;background:#fff;border:1px solid var(--line);color:var(--text);border-radius:18px;padding:13px 15px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease;box-shadow:inset 0 1px 0 rgba(255,255,255,.92)}
 .input:focus,.textarea:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 4px rgba(93,135,255,.16)}
+.input[readonly],.textarea[readonly]{background:#f6f8fc;color:#71819b}
 .textarea{resize:vertical;min-height:140px}
 label{display:block;margin:0 0 8px;font-size:13px;color:#41516b;font-weight:800}
 .check-row{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--text);margin:0 0 10px}
@@ -4076,10 +4160,12 @@ function toggleZoneKindFields(kind){
 function fillEditModal(raw){
   try{
     const data=JSON.parse(raw);
+    const form=document.querySelector('#editModal form[data-record-editor-form]');
     document.getElementById('edit_name').value=data.name||'@';
     document.getElementById('edit_type').value=data.type||'A';
     document.getElementById('edit_ttl').value=data.ttl||300;
     document.getElementById('edit_content').value=data.content||'';
+    if(form){syncRecordEditorState(form);}
   }catch(e){console.error(e);alert('Failed to load RRset into editor.');}
 }
 function fillGeoEditModal(raw){
@@ -4146,11 +4232,49 @@ function syncBulkSelection(targetId){
     if(row){row.classList.toggle('is-selected',el.checked);}
   });
 }
+function recordEditorMeta(type,zoneName){
+  const cleanZone=String(zoneName||'example.com').replace(/\.$/,'')||'example.com';
+  const defaultMeta={
+    placeholder:'185.112.35.197 or 10 mail.example.com.',
+    hint:'Use one value per line for multi-value RRsets.',
+    hostPlaceholder:'@ or subdomain',
+    forceApex:false
+  };
+  if(String(type||'').toUpperCase()!=='SOA'){return defaultMeta;}
+  return {
+    placeholder:`main1.${cleanZone}. hostmaster.${cleanZone}. 2026032501 10800 3600 604800 3600`,
+    hint:'SOA must live only at the zone apex (@) and contain exactly one logical record: primary-nameserver responsible-mailbox serial refresh retry expire minimum. Multi-line BIND-style SOA input is accepted.',
+    hostPlaceholder:'@',
+    forceApex:true
+  };
+}
+function syncRecordEditorState(form){
+  if(!(form instanceof HTMLFormElement)){return;}
+  const typeInput=form.querySelector('[data-record-type-input]');
+  const contentInput=form.querySelector('[data-record-content]');
+  const hintInput=form.querySelector('[data-record-content-hint]');
+  const hostInput=form.querySelector('[data-record-host]');
+  const meta=recordEditorMeta(typeInput?typeInput.value:'',form.dataset.zoneName||'');
+  if(contentInput){contentInput.placeholder=meta.placeholder;}
+  if(hintInput){hintInput.textContent=meta.hint;}
+  if(hostInput){
+    hostInput.placeholder=meta.hostPlaceholder;
+    if(meta.forceApex){
+      hostInput.dataset.autoLocked='1';
+      hostInput.readOnly=true;
+      hostInput.value='@';
+    }else if(hostInput.dataset.autoLocked==='1'){
+      hostInput.readOnly=false;
+      delete hostInput.dataset.autoLocked;
+    }
+  }
+}
 function initializeWorkspaceState(){
   const kind=document.getElementById('zone_kind');
   if(kind){toggleZoneKindFields(kind.value);}
   const targets=new Set(Array.from(document.querySelectorAll('[data-bulk-target]')).map(el=>el.dataset.bulkTarget).filter(Boolean));
   targets.forEach(syncBulkSelection);
+  document.querySelectorAll('form[data-record-editor-form]').forEach(syncRecordEditorState);
   syncBodyModalState();
 }
 async function refreshWorkspace(){
@@ -4212,6 +4336,10 @@ document.addEventListener('change',function(event){
   const target=event.target;
   if(!(target instanceof HTMLElement)){return;}
   if(target.id==='zone_kind'){toggleZoneKindFields(target.value);}
+  if(target.matches('[data-record-type-input]')){
+    const form=target.closest('form');
+    if(form){syncRecordEditorState(form);}
+  }
   if(target.matches('[data-select-all]')){
     const bulkTarget=target.dataset.bulkTarget||'';
     getBulkBindings(bulkTarget).rows.forEach(el=>{el.checked=target.checked;});
