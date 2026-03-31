@@ -582,14 +582,14 @@ function renderLoginPage(): never
     $uiDir = currentUiDirection();
 
     echo '<!doctype html><html lang="' . h($uiLocale) . '" dir="' . h($uiDir) . '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-    echo '<title>HiData</title>';
+    echo '<title>IRG</title>';
     echo '<style>' . baseCss() . loginCss() . '</style>';
     echo '</head><body class="login-body">';
     echo '<div class="login-shell">';
     echo '<section class="login-card">';
     echo '<div class="login-brand">';
     echo '<div class="brand-mark">' . hidataLogoSvg('hidata-logo') . '</div>';
-    echo '<div class="brand-title">HiData</div>';
+    echo '<div class="brand-title">IRG</div>';
     echo '</div>';
     if ($flash) {
         echo renderFlash($flash);
@@ -3297,7 +3297,7 @@ function renderPage(array $data): void
     $canCreateZones = canCreateZones($config);
 
     echo '<!doctype html><html lang="' . h($uiLocale) . '" dir="' . h($uiDir) . '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-    echo '<title>' . h((string)($config['app']['name'] ?? 'HiData GeoDNS Manager')) . '</title>';
+    echo '<title>' . h((string)($config['app']['name'] ?? 'IRG GeoDNS Manager')) . '</title>';
     echo '<style>' . baseCss() . appCss() . '</style>';
     echo '</head><body class="app-body">';
     echo '<div class="layout">';
@@ -3305,7 +3305,7 @@ function renderPage(array $data): void
     echo '<div class="sidebar-panel sidebar-brand-panel">';
     echo '<div class="brand">';
     echo '<div class="brand-logo">' . hidataLogoSvg('hidata-logo') . '</div>';
-    echo '<div class="brand-name">HiData</div>';
+    echo '<div class="brand-name">IRG</div>';
     echo '</div>';
     echo '</div>';
 
@@ -3356,7 +3356,7 @@ function renderPage(array $data): void
     echo '<div class="app-stage">';
     echo '<header class="app-header">';
     echo '<div class="app-header-copy">';
-    echo '<h1>' . ($currentZone ? h($currentZoneDisplayName) : 'HiData') . '</h1>';
+    echo '<h1>' . ($currentZone ? h($currentZoneDisplayName) : 'IRG') . '</h1>';
     echo '</div>';
     echo '<div class="app-header-actions">';
     if ($canCreateZones) {
@@ -3865,12 +3865,12 @@ function buildEditModal(string $zoneName): string
 
 function buildImportModal(string $zoneName): string
 {
-    return '<div class="modal" id="importModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Import domain records</h3><button class="icon-btn" type="button" onclick="closeModal(\'importModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" enctype="multipart/form-data" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="import_zone_file"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><label>Zone file</label><input class="input" type="file" name="zone_file" accept=".txt,.zone,text/plain"><div class="hint">Upload a Cloudflare/BIND-style text export, or paste the same content below.</div><label>Or paste zone text</label><textarea class="textarea" name="zone_text" rows="12" placeholder="hidata.org. 3600 IN A 192.0.2.10"></textarea><div class="grid-two"><div><label>Import options</label><div class="hint"><label class="check-row"><input type="checkbox" name="import_ns" value="1"> Import NS records too</label><label class="check-row"><input type="checkbox" name="import_soa" value="1"> Import SOA record too</label></div></div><div><label>Notes</label><div class="hint">Imported RRsets are upserted with REPLACE, so records in this file overwrite the same name/type in the selected domain. Records not present in the file are kept. SOA and NS are skipped by default because Cloudflare exports often contain authority values that should be changed before production use.</div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'importModal\')">Cancel</button><button class="btn btn-primary" type="submit">Import records</button></div></form></div></div>';
+    return '<div class="modal" id="importModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Import domain records</h3><button class="icon-btn" type="button" onclick="closeModal(\'importModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div>' . modalScopeBanner($zoneName) . '<form method="post" enctype="multipart/form-data" data-async="workspace"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="import_zone_file"><input type="hidden" name="zone_name" value="' . h($zoneName) . '"><label>Zone file</label><input class="input" type="file" name="zone_file" accept=".txt,.zone,text/plain"><div class="hint">Upload a Cloudflare/BIND-style text export, or paste the same content below.</div><label>Or paste zone text</label><textarea class="textarea" name="zone_text" rows="12" placeholder="example.com. 3600 IN A 192.0.2.10"></textarea><div class="grid-two"><div><label>Import options</label><div class="hint"><label class="check-row"><input type="checkbox" name="import_ns" value="1"> Import NS records too</label><label class="check-row"><input type="checkbox" name="import_soa" value="1"> Import SOA record too</label></div></div><div><label>Notes</label><div class="hint">Imported RRsets are upserted with REPLACE, so records in this file overwrite the same name/type in the selected domain. Records not present in the file are kept. SOA and NS are skipped by default because Cloudflare exports often contain authority values that should be changed before production use.</div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'importModal\')">Cancel</button><button class="btn btn-primary" type="submit">Import records</button></div></form></div></div>';
 }
 
 function buildCreateZoneModal(): string
 {
-    return '<div class="modal" id="zoneCreateModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Create domain project</h3><button class="icon-btn" type="button" onclick="closeModal(\'zoneCreateModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div><div class="modal-intro">Start by defining the main domain, for example <code>hidata.org</code>. After this project is created, all records, imports, exports, and GeoDNS rules are managed inside the same domain.</div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_zone"><div class="grid-two"><div><label>Main domain</label><input class="input" name="zone_name" placeholder="hidata.org" required></div><div><label>Project type</label><select class="input" id="zone_kind" name="zone_kind" onchange="toggleZoneKindFields(this.value)">' . zoneKindOptions() . '</select></div><div id="zone_nameservers_field"><label>Nameservers</label><textarea class="textarea" name="nameservers" rows="5" placeholder="ns1.hidata.org.&#10;ns2.hidata.org." required></textarea></div><div id="zone_masters_field" style="display:none"><label>Masters</label><textarea class="textarea" name="masters" rows="5" placeholder="192.0.2.10&#10;192.0.2.11"></textarea></div><div><label>Account</label><input class="input" name="account" placeholder="Optional owner/account label"></div><div><label>Project options</label><div class="hint"><label class="check-row"><input type="checkbox" name="dnssec" checked> Enable DNSSEC support</label><label class="check-row"><input type="checkbox" name="api_rectify" checked> Enable API rectify</label></div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'zoneCreateModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create domain</button></div></form></div></div>';
+    return '<div class="modal" id="zoneCreateModal" aria-hidden="true"><div class="modal-card"><div class="modal-header"><h3>Create domain project</h3><button class="icon-btn" type="button" onclick="closeModal(\'zoneCreateModal\')">' . uiIconSvg('close', 'ui-icon') . '</button></div><div class="modal-intro">Start by defining the main domain, for example <code>example.com</code>. After this project is created, all records, imports, exports, and GeoDNS rules are managed inside the same domain.</div><form method="post"><input type="hidden" name="csrf_token" value="' . h(csrfToken()) . '"><input type="hidden" name="action" value="create_zone"><div class="grid-two"><div><label>Main domain</label><input class="input" name="zone_name" placeholder="example.com" required></div><div><label>Project type</label><select class="input" id="zone_kind" name="zone_kind" onchange="toggleZoneKindFields(this.value)">' . zoneKindOptions() . '</select></div><div id="zone_nameservers_field"><label>Nameservers</label><textarea class="textarea" name="nameservers" rows="5" placeholder="ns1.example.com.&#10;ns2.example.com." required></textarea></div><div id="zone_masters_field" style="display:none"><label>Masters</label><textarea class="textarea" name="masters" rows="5" placeholder="192.0.2.10&#10;192.0.2.11"></textarea></div><div><label>Account</label><input class="input" name="account" placeholder="Optional owner/account label"></div><div><label>Project options</label><div class="hint"><label class="check-row"><input type="checkbox" name="dnssec" checked> Enable DNSSEC support</label><label class="check-row"><input type="checkbox" name="api_rectify" checked> Enable API rectify</label></div></div></div><div class="modal-footer"><button class="btn btn-ghost" type="button" onclick="closeModal(\'zoneCreateModal\')">Cancel</button><button class="btn btn-primary" type="submit">Create domain</button></div></form></div></div>';
 }
 
 function zoneKindOptions(): string
