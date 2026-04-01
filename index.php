@@ -220,9 +220,9 @@ function sendSecurityHeaders(array $config, bool $isHttps): void
     $csp = [
         "default-src 'self'",
         "img-src 'self' data:",
-        "style-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
         "script-src 'self' 'unsafe-inline'",
-        "font-src 'self' data:",
+        "font-src 'self' data: https://cdn.jsdelivr.net",
         "base-uri 'self'",
         "form-action 'self'",
         "frame-ancestors 'none'",
@@ -583,6 +583,7 @@ function renderLoginPage(): never
 
     echo '<!doctype html><html lang="' . h($uiLocale) . '" dir="' . h($uiDir) . '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
     echo '<title>IRG</title>';
+    echo uiFontHeadLinks();
     echo '<style>' . baseCss() . loginCss() . '</style>';
     echo '</head><body class="login-body">';
     echo '<div class="login-shell">';
@@ -3289,6 +3290,7 @@ function uiTranslations(): array
         'Failed to load GeoDNS rule into editor.' => 'بارگذاری قانون GeoDNS در ویرایشگر انجام نشد.',
         'Failed to load country CIDR data into editor.' => 'بارگذاری اطلاعات CIDR کشور در ویرایشگر انجام نشد.',
         'Select all visible RRsets' => 'انتخاب همه RRsetهای قابل مشاهده',
+        'Back to main page' => 'بازگشت به صفحه اصلی',
         'Rectify this domain now?' => 'الان این دامنه اصلاح شود؟',
         'Delete this domain and all its records?' => 'این دامنه و تمام رکوردهایش حذف شود؟',
         'Delete the selected RRsets?' => 'RRsetهای انتخاب‌شده حذف شوند؟',
@@ -3399,6 +3401,12 @@ function jsStringLiteral(string $value): string
 function cssContentLiteral(string $value): string
 {
     return addcslashes($value, "\\\"\n\r\f");
+}
+
+function uiFontHeadLinks(): string
+{
+    return '<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>'
+        . '<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">';
 }
 
 function uiZoneKindLabel(?string $kind): string
@@ -3610,6 +3618,7 @@ function renderPage(array $data): void
 
     echo '<!doctype html><html lang="' . h($uiLocale) . '" dir="' . h($uiDir) . '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
     echo '<title>' . h((string)($config['app']['name'] ?? 'IRG GeoDNS Manager')) . '</title>';
+    echo uiFontHeadLinks();
     echo '<style>' . baseCss() . appCss() . '</style>';
     echo '</head><body class="app-body">';
     echo '<div class="layout">';
@@ -3623,6 +3632,13 @@ function renderPage(array $data): void
 
     echo '<nav class="sidebar-panel sidebar-nav-card">';
     echo '<div class="sidebar-section-title">' . h(t('Workspace')) . '</div>';
+    if ($currentZone) {
+        echo '<a class="shell-nav-link" href="' . h(currentPageUrl([
+            'zone' => null,
+            'record_filter' => null,
+            'download' => null,
+        ])) . '"><span class="shell-nav-icon">' . uiIconSvg('dashboard') . '</span><span>' . h(t('Back to main page')) . '</span></a>';
+    }
     echo '<a class="shell-nav-link" href="#workspace-start"><span class="shell-nav-icon">' . uiIconSvg('dashboard') . '</span><span>' . h(t('Overview')) . '</span></a>';
     if ($currentZone) {
         echo '<a class="shell-nav-link" href="#geo-rules"><span class="shell-nav-icon">' . uiIconSvg('map') . '</span><span>' . h(t('GeoDNS Rules')) . '</span></a>';
@@ -4149,8 +4165,8 @@ function buildGeoAddModal(string $zoneName, array $config): string
         . '<div><label>' . h(t('TTL')) . '</label><input class="input" type="number" name="geo_ttl" value="' . h((string)$defaultTtl) . '" min="1" max="2147483647" required><div class="field-help">' . h(t('How long resolvers may cache the answer. Keep the same TTL for A and AAAA rules on the same hostname.')) . '</div></div>'
         . '<div><label>' . h(t('Countries')) . '</label><input class="input mono" name="geo_country_codes" value="' . h($defaultCountries) . '" placeholder="' . h(t('IR or IR,AF')) . '" required><div class="field-help">' . h(t('Use two-letter ISO country codes such as IR or IR,AF. Visitors from these countries will use the matched pool.')) . '</div></div>'
         . '</div>'
-        . '<label>' . h(t('Matched pool')) . '</label><textarea class="textarea mono" name="geo_country_answers" rows="5" placeholder="185.112.35.197" required></textarea><div class="field-help">' . h(t('Enter one answer per line. These values are returned when the visitor country matches the list above.')) . '</div>'
-        . '<label>' . h(t('Default pool')) . '</label><textarea class="textarea mono" name="geo_default_answers" rows="5" placeholder="203.0.113.20" required></textarea><div class="field-help">' . h(t('Fallback answers for all countries that are not in the matched list.')) . '</div>'
+        . '<label>' . h(t('Matched pool')) . '</label><textarea class="textarea textarea-compact mono" name="geo_country_answers" rows="4" placeholder="185.112.35.197" required></textarea><div class="field-help">' . h(t('Enter one answer per line. These values are returned when the visitor country matches the list above.')) . '</div>'
+        . '<label>' . h(t('Default pool')) . '</label><textarea class="textarea textarea-compact mono" name="geo_default_answers" rows="4" placeholder="203.0.113.20" required></textarea><div class="field-help">' . h(t('Fallback answers for all countries that are not in the matched list.')) . '</div>'
         . '<div class="grid-two">'
         . '<div><label>' . h(t('Health check port')) . '</label><input class="input" type="number" name="geo_health_check_port" min="1" max="65535" placeholder="443"><div class="field-help">' . h(t('Optional. If this TCP port is unreachable, traffic falls back to the other pool automatically.')) . '</div></div>'
         . '<div><label>' . h(t('Behavior')) . '</label><div class="hint">' . h(t('If a health port is set, the chosen country pool falls back to the other pool when that TCP port is down.')) . '</div></div>'
@@ -4171,8 +4187,8 @@ function buildGeoEditModal(string $zoneName): string
         . '<div><label>' . h(t('TTL')) . '</label><input class="input" type="number" id="geo_edit_ttl" name="geo_ttl" min="1" max="2147483647" required><div class="field-help">' . h(t('How long resolvers may cache the answer. Keep the same TTL for A and AAAA rules on the same hostname.')) . '</div></div>'
         . '<div><label>' . h(t('Countries')) . '</label><input class="input mono" id="geo_edit_country_codes" name="geo_country_codes" required><div class="field-help">' . h(t('Use two-letter ISO country codes such as IR or IR,AF. Visitors from these countries will use the matched pool.')) . '</div></div>'
         . '</div>'
-        . '<label>' . h(t('Matched pool')) . '</label><textarea class="textarea mono" id="geo_edit_country_answers" name="geo_country_answers" rows="5" required></textarea><div class="field-help">' . h(t('Enter one answer per line. These values are returned when the visitor country matches the list above.')) . '</div>'
-        . '<label>' . h(t('Default pool')) . '</label><textarea class="textarea mono" id="geo_edit_default_answers" name="geo_default_answers" rows="5" required></textarea><div class="field-help">' . h(t('Fallback answers for all countries that are not in the matched list.')) . '</div>'
+        . '<label>' . h(t('Matched pool')) . '</label><textarea class="textarea textarea-compact mono" id="geo_edit_country_answers" name="geo_country_answers" rows="4" required></textarea><div class="field-help">' . h(t('Enter one answer per line. These values are returned when the visitor country matches the list above.')) . '</div>'
+        . '<label>' . h(t('Default pool')) . '</label><textarea class="textarea textarea-compact mono" id="geo_edit_default_answers" name="geo_default_answers" rows="4" required></textarea><div class="field-help">' . h(t('Fallback answers for all countries that are not in the matched list.')) . '</div>'
         . '<div class="grid-two">'
         . '<div><label>' . h(t('Health check port')) . '</label><input class="input" type="number" id="geo_edit_health_check_port" name="geo_health_check_port" min="1" max="65535"><div class="field-help">' . h(t('Optional. If this TCP port is unreachable, traffic falls back to the other pool automatically.')) . '</div></div>'
         . '<div><label>' . h(t('Behavior')) . '</label><div class="hint">' . h(t('Changing the hostname or answer type re-syncs the new LUA RRset and also cleans up the old location when needed.')) . '</div></div>'
@@ -4271,6 +4287,7 @@ radial-gradient(circle at 100% 0%,rgba(19,222,185,.12),transparent 24%),
 radial-gradient(circle at 100% 100%,rgba(255,174,31,.12),transparent 22%),
 linear-gradient(180deg,#f8fbff 0%,#f3f7fb 100%);
 color:var(--text)}
+html[lang="fa"],html[lang="fa"] body,html[lang="fa"] input,html[lang="fa"] textarea,html[lang="fa"] select,html[lang="fa"] button{font-family:"Vazirmatn","Plus Jakarta Sans","Segoe UI Variable","Segoe UI",system-ui,sans-serif}
 body.modal-active{overflow:hidden}
 a{color:inherit;text-decoration:none}
 code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -4279,6 +4296,7 @@ code{background:var(--primary-soft);border:1px solid #d7e2ff;border-radius:10px;
 .input:focus,.textarea:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 4px rgba(93,135,255,.16)}
 .input[readonly],.textarea[readonly]{background:#f6f8fc;color:#71819b}
 .textarea{resize:vertical;min-height:140px}
+.textarea-compact{min-height:96px}
 label{display:block;margin:0 0 8px;font-size:13px;color:#41516b;font-weight:800}
 .check-row{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--text);margin:0 0 10px}
 .check-row input{margin:0}
@@ -4319,6 +4337,22 @@ function loginCss(): string
 .login-body{min-height:100vh;display:grid;place-items:center;padding:20px}
 .login-shell{width:min(380px,100%)}
 .login-topbar{display:flex;justify-content:flex-end;margin-bottom:12px}
+.login-topbar .menu-dropdown{position:relative}
+.login-topbar .menu-dropdown>summary{list-style:none}
+.login-topbar .menu-dropdown>summary::-webkit-details-marker{display:none}
+.login-topbar .menu-trigger{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:16px;background:rgba(255,255,255,.94);border:1px solid var(--line);box-shadow:var(--shadow-xs);cursor:pointer;font-weight:800}
+.login-topbar .menu-trigger-text{white-space:nowrap}
+.login-topbar .menu-caret{width:16px;height:16px;color:#8191aa}
+.login-topbar .menu-card{position:absolute;inset-block-start:calc(100% + 10px);inset-inline-end:0;width:260px;background:#fff;border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);padding:12px;display:grid;gap:8px;z-index:20}
+.login-topbar .menu-label{padding:8px 10px 4px;font-size:11px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#7b89a2}
+.login-topbar .menu-item{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:16px;transition:background .18s ease}
+.login-topbar .menu-item:hover{background:var(--panel-2)}
+.login-topbar .menu-item-copy{display:grid;gap:2px;flex:1;min-width:0}
+.login-topbar .menu-item-copy strong{font-size:14px}
+.login-topbar .menu-item-copy small{color:var(--muted);line-height:1.5}
+.login-topbar .language-item.is-active{background:var(--primary-soft)}
+.login-topbar .menu-check{color:var(--primary-strong)}
+[dir="rtl"] .login-topbar .menu-card{inset-inline-end:auto;inset-inline-start:0}
 .login-card{background:rgba(255,255,255,.94);border:1px solid rgba(230,236,243,.95);border-radius:26px;box-shadow:var(--shadow);padding:28px 24px;display:grid;gap:18px}
 .login-brand{display:grid;justify-items:center;gap:14px}
 .brand-mark{width:86px;height:86px;border-radius:24px;background:linear-gradient(145deg,#324dff 0%,#5d87ff 48%,#13deb9 100%);color:#fff;display:grid;place-items:center;box-shadow:0 22px 40px rgba(93,135,255,.2)}
@@ -4330,7 +4364,7 @@ function loginCss(): string
 .login-input{padding-inline-start:48px;height:52px;border-radius:16px}
 .login-submit{height:52px;border-radius:16px}
 .submit-icon{width:22px;height:22px}
-@media (max-width:640px){.login-body{padding:16px}.login-card{padding:24px 20px}.brand-mark{width:78px;height:78px}.brand-title{font-size:34px}}
+@media (max-width:640px){.login-body{padding:16px}.login-card{padding:24px 20px}.brand-mark{width:78px;height:78px}.brand-title{font-size:34px}.login-topbar .menu-card{width:min(280px,calc(100vw - 32px))}}
 CSS;
 }
 
@@ -4460,9 +4494,9 @@ tbody tr:last-child td{border-bottom:0}
 .config-row{display:grid;gap:6px;padding:12px 14px;border-radius:16px;background:#fff;border:1px solid #eef2f7}
 .config-row span{font-size:12px;color:#7a889f;text-transform:uppercase;letter-spacing:.08em;font-weight:900}
 .config-row strong{font-size:13px;word-break:break-all}
-.modal{position:fixed;inset:0;background:rgba(42,53,71,.28);display:none;align-items:center;justify-content:center;padding:22px;z-index:60}
+.modal{position:fixed;inset:0;background:rgba(42,53,71,.28);display:none;align-items:flex-start;justify-content:center;padding:22px;overflow-y:auto;z-index:60}
 .modal.open{display:flex}
-.modal-card{width:min(760px,100%);background:#fff;border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:20px}
+.modal-card{width:min(760px,100%);max-height:calc(100vh - 44px);margin-inline:auto;background:#fff;border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:20px;overflow-y:auto}
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
 .modal-header h3{margin:0;font-size:20px;letter-spacing:-.02em}
 .icon-btn{width:40px;height:40px;border-radius:14px;border:1px solid var(--line);background:#fff;color:var(--text);font-size:24px;cursor:pointer;display:grid;place-items:center}
