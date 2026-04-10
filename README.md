@@ -38,6 +38,12 @@ The PHP panel runs on the same server as PowerDNS and talks to the local API ins
 - Read-only mode
 - Secondary-style write protection
 
+## API
+
+The application also exposes a JSON API under `/api/v1`.
+
+Full endpoint documentation, request formats, validation rules, and `curl` examples are available in [API.md](API.md).
+
 ## Quick install
 
 Run on Ubuntu 22.04 as `root`:

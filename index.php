@@ -1002,36 +1002,7 @@ function requirePostedZoneName(): string
 
 function parseBulkDeleteTargetsFromPost(string $zoneName): array
 {
-    $rawTargets = $_POST['selected_rrsets'] ?? [];
-    if (!is_array($rawTargets)) {
-        $rawTargets = [$rawTargets];
-    }
-
-    $targets = [];
-    foreach ($rawTargets as $rawTarget) {
-        $value = trim((string)$rawTarget);
-        if ($value === '') {
-            continue;
-        }
-
-        [$nameInput, $type] = array_pad(explode('|', $value, 2), 2, '');
-        $type = strtoupper(trim($type));
-        if ($type === '') {
-            throw new RuntimeException('One or more selected RRsets are invalid.');
-        }
-
-        $name = fqdnFromInput(trim($nameInput), $zoneName);
-        $targets[$name . '|' . $type] = [
-            'name' => $name,
-            'type' => $type,
-        ];
-    }
-
-    if ($targets === []) {
-        throw new RuntimeException('Select at least one RRset to delete.');
-    }
-
-    return array_values($targets);
+    return parseBulkDeleteTargetsFromInput($zoneName, $_POST);
 }
 
 function mutationRedirectTarget(): string
@@ -1065,6 +1036,65 @@ function normalizeStringListInput($input): array
     }
 
     return parseTextareaLines((string)$input);
+}
+
+function inputHasAnyKey(array $input, array $keys): bool
+{
+    foreach ($keys as $key) {
+        if (array_key_exists($key, $input)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function parseBulkDeleteTargetsFromInput(string $zoneName, $input): array
+{
+    $rawTargets = $input;
+    if (is_array($input)) {
+        $rawTargets = $input['selected_rrsets'] ?? $input['targets'] ?? $input['rrsets'] ?? [];
+    }
+
+    if (!is_array($rawTargets)) {
+        $rawTargets = [$rawTargets];
+    }
+
+    $targets = [];
+    foreach ($rawTargets as $rawTarget) {
+        $nameInput = '';
+        $type = '';
+
+        if (is_array($rawTarget)) {
+            $nameInput = trim((string)($rawTarget['name'] ?? $rawTarget['fqdn'] ?? ''));
+            $type = strtoupper(trim((string)($rawTarget['type'] ?? $rawTarget['record_type'] ?? '')));
+        } else {
+            $value = trim((string)$rawTarget);
+            if ($value === '') {
+                continue;
+            }
+
+            [$nameInput, $type] = array_pad(explode('|', $value, 2), 2, '');
+            $nameInput = trim($nameInput);
+            $type = strtoupper(trim($type));
+        }
+
+        if ($nameInput === '' || $type === '') {
+            throw new RuntimeException('One or more selected RRsets are invalid.');
+        }
+
+        $name = fqdnFromInput($nameInput, $zoneName);
+        $targets[$name . '|' . $type] = [
+            'name' => $name,
+            'type' => $type,
+        ];
+    }
+
+    if ($targets === []) {
+        throw new RuntimeException('Select at least one RRset to delete.');
+    }
+
+    return array_values($targets);
 }
 
 function inputToBool($value, bool $default = false): bool
@@ -1130,6 +1160,77 @@ function createZoneFromInput(array $config, array $input): array
 
     audit($config, 'create_zone', ['zone' => $zone['name'], 'kind' => $kind]);
     return $zone;
+}
+
+function buildZoneUpdatePayloadFromInput(array $zone, array $input): array
+{
+    if (inputHasAnyKey($input, ['nameservers'])) {
+        throw new RuntimeException('Zone metadata updates do not accept nameservers. Manage NS changes through the RRset API instead.');
+    }
+
+    $payload = [];
+    $currentKind = canonicalZoneKind((string)($zone['kind'] ?? 'Native'));
+    $effectiveKind = $currentKind;
+
+    if (inputHasAnyKey($input, ['zone_kind', 'kind'])) {
+        $effectiveKind = canonicalZoneKind((string)($input['zone_kind'] ?? $input['kind'] ?? ''));
+        $payload['kind'] = $effectiveKind;
+    }
+
+    if (inputHasAnyKey($input, ['account'])) {
+        $payload['account'] = trim((string)($input['account'] ?? ''));
+    }
+
+    if (inputHasAnyKey($input, ['masters'])) {
+        $payload['masters'] = normalizeStringListInput($input['masters'] ?? []);
+    }
+
+    if (isSecondaryLikeKind($effectiveKind) && (isset($payload['kind']) || isset($payload['masters']))) {
+        $masters = $payload['masters'] ?? normalizeStringListInput($zone['masters'] ?? []);
+        if ($masters === []) {
+            throw new RuntimeException('Secondary-style zones require at least one master server.');
+        }
+        $payload['masters'] = $masters;
+    } elseif (!isSecondaryLikeKind($effectiveKind) && isset($payload['kind']) && isSecondaryLikeKind($currentKind)) {
+        $payload['masters'] = [];
+    }
+
+    if (inputHasAnyKey($input, ['dnssec'])) {
+        $payload['dnssec'] = inputToBool($input['dnssec'] ?? null, !empty($zone['dnssec']));
+    }
+
+    if (inputHasAnyKey($input, ['api_rectify'])) {
+        $payload['api_rectify'] = inputToBool($input['api_rectify'] ?? null, !empty($zone['api_rectify']));
+    }
+
+    foreach (['catalog', 'nsec3param', 'soa_edit', 'soa_edit_api'] as $field) {
+        if (inputHasAnyKey($input, [$field])) {
+            $value = trim((string)($input[$field] ?? ''));
+            $payload[$field] = $value !== '' ? $value : null;
+        }
+    }
+
+    if ($payload === []) {
+        throw new RuntimeException('Provide at least one zone field to update.');
+    }
+
+    return $payload;
+}
+
+function updateZoneFromInput(array $config, array $zone, array $input): array
+{
+    $payload = buildZoneUpdatePayloadFromInput($zone, $input);
+    $updatedZone = pdnsRequest($config, 'PUT', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), $payload);
+    if (!is_array($updatedZone) || empty($updatedZone['name'])) {
+        $updatedZone = fetchZone($config, (string)$zone['id']);
+    }
+
+    audit($config, 'update_zone', [
+        'zone' => $zone['name'],
+        'fields' => array_keys($payload),
+    ]);
+
+    return $updatedZone;
 }
 
 function createZoneFromPost(array $config): array
@@ -1690,6 +1791,24 @@ function buildRrsetPayloadFromInput(string $zoneName, array $input): array
     ];
 }
 
+function deduplicateRrsetRecords(array $records): array
+{
+    $deduplicated = [];
+    foreach ($records as $record) {
+        $content = trim((string)($record['content'] ?? ''));
+        if ($content === '') {
+            continue;
+        }
+
+        $deduplicated[$content] = [
+            'content' => $content,
+            'disabled' => (bool)($record['disabled'] ?? false),
+        ];
+    }
+
+    return array_values($deduplicated);
+}
+
 function normalizeRrsetRecordsInput(string $type, $input): array
 {
     $records = [];
@@ -1712,7 +1831,7 @@ function normalizeRrsetRecordsInput(string $type, $input): array
             ];
         }
 
-        return $records;
+        return deduplicateRrsetRecords($records);
     }
 
     $rawValues = trim((string)$input);
@@ -1726,10 +1845,10 @@ function normalizeRrsetRecordsInput(string $type, $input): array
         if ($soaValue === '') {
             throw new RuntimeException('SOA content is required.');
         }
-        return [[
+        return deduplicateRrsetRecords([[
             'content' => normalizeRecordContent($type, $soaValue),
             'disabled' => false,
-        ]];
+        ]]);
     }
 
     foreach ($lines as $line) {
@@ -1743,7 +1862,7 @@ function normalizeRrsetRecordsInput(string $type, $input): array
         ];
     }
 
-    return $records;
+    return deduplicateRrsetRecords($records);
 }
 
 function applyZoneRrsetPayload(array $config, array $zone, array $payload, string $action): array
@@ -3605,12 +3724,23 @@ function handleApiRequest(array $config, string $routePath): never
                 'version' => 'v1',
                 'auth' => $auth,
                 'endpoints' => [
+                    '/api/v1/health',
                     '/api/v1/me',
                     '/api/v1/zones',
                     '/api/v1/zones/{zone}',
+                    '/api/v1/zones/{zone}/export',
+                    '/api/v1/zones/{zone}/import',
+                    '/api/v1/zones/{zone}/rectify',
                     '/api/v1/zones/{zone}/rrsets',
+                    '/api/v1/zones/{zone}/rrsets/bulk-delete',
+                    '/api/v1/zones/{zone}/rrsets/{type}/{name}',
+                    '/api/v1/zones/{zone}/rrsets/{type}/{name}/records',
+                    '/api/v1/zones/{zone}/geodns/sync',
                     '/api/v1/zones/{zone}/geodns/rules',
+                    '/api/v1/zones/{zone}/geodns/rules/{id}',
+                    '/api/v1/zones/{zone}/geodns/rules/{id}/sync',
                     '/api/v1/country-ip-sets',
+                    '/api/v1/country-ip-sets/{country_code}',
                 ],
                 'documentation' => 'See API.md in the project root for full request and response details.',
             ]);
@@ -3686,6 +3816,17 @@ function handleZoneApiRequest(array $config, string $method, array $segments): n
                 ],
                 'rrsets' => array_map(static fn(array $rrset): array => apiSerializeRrset($rrset, (string)$zone['name']), $rrsets),
                 'geo_rules' => array_values($geoRules),
+            ]);
+        }
+
+        if ($method === 'PUT') {
+            guardApiWriteAccess($config);
+            $zone = fetchZone($config, $zoneName);
+            guardWritableZone($config, $zone);
+            $updatedZone = updateZoneFromInput($config, $zone, readJsonRequestBody(false));
+            respondApiData([
+                'message' => 'Domain updated successfully.',
+                'zone' => apiSerializeZoneSummary($updatedZone),
             ]);
         }
 
@@ -3791,6 +3932,44 @@ function handleZoneRrsetApiRequest(array $config, string $method, string $zoneNa
             'message' => 'Record set added successfully.',
             'rrset' => apiSerializeRrset($rrset, (string)$zone['name']),
         ], 201);
+    }
+
+    if ($segments === ['bulk-delete']) {
+        apiEnsureMethod($method, ['POST']);
+        guardApiWriteAccess($config);
+        guardWritableZone($config, $zone);
+        $targets = parseBulkDeleteTargetsFromInput((string)$zone['name'], readJsonRequestBody(false));
+        guardManualRrsetMutationsAgainstGeoRules($config, (string)$zone['name'], $targets, 'delete_rrset');
+        backupZoneSnapshot($config, (string)$zone['id'], 'change');
+        pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
+            'rrsets' => array_map(static fn(array $target): array => [
+                'name' => (string)$target['name'],
+                'type' => (string)$target['type'],
+                'changetype' => 'DELETE',
+            ], $targets),
+        ]);
+        maybeRectify($config, $zone);
+        audit($config, 'bulk_delete_rrsets', [
+            'zone' => $zone['name'],
+            'rrset_count' => count($targets),
+            'rrsets' => $targets,
+        ]);
+
+        respondApiData([
+            'message' => count($targets) === 1
+                ? '1 record set deleted successfully.'
+                : count($targets) . ' record sets deleted successfully.',
+            'deleted_count' => count($targets),
+            'rrsets' => array_map(static fn(array $target): array => [
+                'name' => ensureTrailingDot((string)$target['name']),
+                'display_name' => displayRelativeName((string)$target['name'], (string)$zone['name']),
+                'type' => strtoupper((string)$target['type']),
+            ], $targets),
+        ]);
+    }
+
+    if (count($segments) === 3 && $segments[2] === 'records') {
+        handleZoneRrsetRecordApiRequest($config, $method, $zone, $visibleRrsets, (string)$segments[1], (string)$segments[0]);
     }
 
     if (count($segments) !== 2) {
@@ -3922,6 +4101,7 @@ function handleCountryIpSetApiRequest(array $config, string $method, array $segm
             $countryIpSets = fetchCountryIpSets($config);
             respondApiData([
                 'country_ip_sets' => array_values($countryIpSets),
+                'count' => count($countryIpSets),
                 'stats' => summarizeCountryIpSets($countryIpSets),
             ]);
         }
@@ -3987,6 +4167,10 @@ function apiSerializeZoneSummary(array $zone): array
         'account' => trim((string)($zone['account'] ?? '')) !== '' ? (string)$zone['account'] : null,
         'dnssec' => !empty($zone['dnssec']),
         'api_rectify' => !empty($zone['api_rectify']),
+        'soa_edit' => array_key_exists('soa_edit', $zone) ? ($zone['soa_edit'] !== null ? (string)$zone['soa_edit'] : null) : null,
+        'soa_edit_api' => array_key_exists('soa_edit_api', $zone) ? ($zone['soa_edit_api'] !== null ? (string)$zone['soa_edit_api'] : null) : null,
+        'catalog' => array_key_exists('catalog', $zone) ? ($zone['catalog'] !== null ? (string)$zone['catalog'] : null) : null,
+        'nsec3param' => array_key_exists('nsec3param', $zone) ? ($zone['nsec3param'] !== null ? (string)$zone['nsec3param'] : null) : null,
         'masters' => array_values(array_map('strval', (array)($zone['masters'] ?? []))),
         'nameservers' => array_values(array_map('strval', (array)($zone['nameservers'] ?? []))),
         'url' => zoneUrl($name),
@@ -4023,7 +4207,7 @@ function apiCountRrsetRecords(array $rrsets): int
     return $count;
 }
 
-function findZoneRrsetOrFail(array $rrsets, string $name, string $type, string $zoneName): array
+function findZoneRrset(array $rrsets, string $name, string $type, string $zoneName): ?array
 {
     $name = normalizeZoneRecordNameInput($name, $zoneName);
     $type = strtoupper(trim($type));
@@ -4033,7 +4217,151 @@ function findZoneRrsetOrFail(array $rrsets, string $name, string $type, string $
         }
     }
 
+    return null;
+}
+
+function findZoneRrsetOrFail(array $rrsets, string $name, string $type, string $zoneName): array
+{
+    $rrset = findZoneRrset($rrsets, $name, $type, $zoneName);
+    if ($rrset !== null) {
+        return $rrset;
+    }
+
     throw new ApiException(404, 'Record set not found.', 'rrset_not_found');
+}
+
+function buildRrsetRecordContentListFromInput(string $type, array $input): array
+{
+    $records = normalizeRrsetRecordsInput($type, $input['records'] ?? ($input['content'] ?? ''));
+    $contents = [];
+    foreach ($records as $record) {
+        $content = trim((string)($record['content'] ?? ''));
+        if ($content !== '' && !in_array($content, $contents, true)) {
+            $contents[] = $content;
+        }
+    }
+
+    if ($contents === []) {
+        throw new RuntimeException('At least one record value is required.');
+    }
+
+    return $contents;
+}
+
+function mergeRrsetRecords(array $existingRecords, array $newRecords): array
+{
+    $merged = [];
+    foreach ([$existingRecords, $newRecords] as $recordList) {
+        foreach ($recordList as $record) {
+            $content = trim((string)($record['content'] ?? ''));
+            if ($content === '') {
+                continue;
+            }
+
+            $merged[$content] = [
+                'content' => $content,
+                'disabled' => (bool)($record['disabled'] ?? false),
+            ];
+        }
+    }
+
+    return array_values($merged);
+}
+
+function handleZoneRrsetRecordApiRequest(
+    array $config,
+    string $method,
+    array $zone,
+    array $visibleRrsets,
+    string $nameSegment,
+    string $typeSegment
+): never {
+    $type = strtoupper(trim($typeSegment));
+    $name = normalizeZoneRecordNameInput($nameSegment, (string)$zone['name']);
+    $existingRrset = findZoneRrset($visibleRrsets, $name, $type, (string)$zone['name']);
+
+    if ($method === 'GET') {
+        $rrset = $existingRrset ?? findZoneRrsetOrFail($visibleRrsets, $name, $type, (string)$zone['name']);
+        respondApiData([
+            'zone' => apiSerializeZoneSummary($zone),
+            'rrset' => apiSerializeRrset($rrset, (string)$zone['name']),
+            'records' => array_values($rrset['records'] ?? []),
+            'count' => count($rrset['records'] ?? []),
+        ]);
+    }
+
+    if ($method === 'POST') {
+        guardApiWriteAccess($config);
+        guardWritableZone($config, $zone);
+        $input = readJsonRequestBody(false);
+        $incomingRecords = normalizeRrsetRecordsInput($type, $input['records'] ?? ($input['content'] ?? ''));
+        if ($incomingRecords === []) {
+            throw new RuntimeException('At least one record value is required.');
+        }
+
+        if ($existingRrset === null) {
+            $ttl = (int)($input['ttl'] ?? 300);
+            $rrset = applyZoneRrsetPayload($config, $zone, buildRrsetPayloadFromInput((string)$zone['name'], [
+                'name' => $name,
+                'type' => $type,
+                'ttl' => $ttl,
+                'records' => $incomingRecords,
+            ]), 'add_rrset');
+
+            respondApiData([
+                'message' => 'Record values added successfully.',
+                'rrset' => apiSerializeRrset($rrset, (string)$zone['name']),
+            ], 201);
+        }
+
+        $ttl = array_key_exists('ttl', $input) ? (int)$input['ttl'] : (int)($existingRrset['ttl'] ?? 300);
+        $rrset = applyZoneRrsetPayload($config, $zone, buildRrsetPayloadFromInput((string)$zone['name'], [
+            'name' => $name,
+            'type' => $type,
+            'ttl' => $ttl,
+            'records' => mergeRrsetRecords((array)($existingRrset['records'] ?? []), $incomingRecords),
+        ]), 'update_rrset');
+
+        respondApiData([
+            'message' => 'Record values added successfully.',
+            'rrset' => apiSerializeRrset($rrset, (string)$zone['name']),
+        ]);
+    }
+
+    apiEnsureMethod($method, ['DELETE']);
+    guardApiWriteAccess($config);
+    guardWritableZone($config, $zone);
+    $rrset = $existingRrset ?? findZoneRrsetOrFail($visibleRrsets, $name, $type, (string)$zone['name']);
+    $contentsToDelete = buildRrsetRecordContentListFromInput($type, readJsonRequestBody(false));
+    $remainingRecords = array_values(array_filter((array)($rrset['records'] ?? []), static function (array $record) use ($contentsToDelete): bool {
+        return !in_array((string)($record['content'] ?? ''), $contentsToDelete, true);
+    }));
+
+    if (count($remainingRecords) === count((array)($rrset['records'] ?? []))) {
+        throw new ApiException(404, 'No matching record values were found on this RRset.', 'record_not_found');
+    }
+
+    if ($remainingRecords === []) {
+        deleteZoneRrset($config, $zone, $name, $type);
+        respondApiData([
+            'message' => 'Record values deleted successfully. The RRset is now empty and was removed.',
+            'rrset' => apiSerializeRrset($rrset, (string)$zone['name']),
+            'deleted_count' => count($contentsToDelete),
+        ]);
+    }
+
+    $updatedRrset = applyZoneRrsetPayload($config, $zone, buildRrsetPayloadFromInput((string)$zone['name'], [
+        'name' => $name,
+        'type' => $type,
+        'ttl' => (int)($rrset['ttl'] ?? 300),
+        'records' => $remainingRecords,
+    ]), 'update_rrset');
+
+    respondApiData([
+        'message' => 'Record values deleted successfully.',
+        'rrset' => apiSerializeRrset($updatedRrset, (string)$zone['name']),
+        'deleted_count' => count($contentsToDelete),
+    ]);
 }
 
 function isAsyncMutationAction(string $action): bool
