@@ -71,6 +71,7 @@ APP_TIMEZONE="${APP_TIMEZONE:-$APP_TIMEZONE_DEFAULT}"
 APP_USERNAME="${APP_USERNAME:-$APP_USERNAME_DEFAULT}"
 APP_PASSWORD="${APP_PASSWORD:-}"
 APP_PASSWORD_HASH="${APP_PASSWORD_HASH:-}"
+APP_API_TOKEN="${APP_API_TOKEN:-}"
 APP_SESSION_IDLE_TIMEOUT="${APP_SESSION_IDLE_TIMEOUT:-$APP_SESSION_IDLE_TIMEOUT_DEFAULT}"
 APP_SESSION_ABSOLUTE_TIMEOUT="${APP_SESSION_ABSOLUTE_TIMEOUT:-$APP_SESSION_ABSOLUTE_TIMEOUT_DEFAULT}"
 APP_REQUIRE_HTTPS="${APP_REQUIRE_HTTPS:-$APP_REQUIRE_HTTPS_DEFAULT}"
@@ -149,6 +150,7 @@ Environment variables:
   APP_USERNAME            Default: ${APP_USERNAME_DEFAULT}
   APP_PASSWORD            Auto-generated when omitted.
   APP_PASSWORD_HASH       Pre-generated hash. Overrides APP_PASSWORD.
+  APP_API_TOKEN           Auto-generated app API bearer token when omitted.
   APP_TIMEZONE            Default: ${APP_TIMEZONE_DEFAULT}
   APP_CONFIG_OVERWRITE    1 to regenerate shared config.php.
   PDNS_DB_NAME            Default: ${PDNS_DB_NAME_DEFAULT}
@@ -427,12 +429,13 @@ extract_pdns_setting() {
 }
 
 hydrate_existing_configuration() {
-  local existing_app_api_key existing_app_hash existing_app_username
+  local existing_app_api_key existing_app_hash existing_app_username existing_app_api_token
   local existing_pdns_api_key existing_pdns_db_password
   local existing_db_name existing_db_user existing_db_password
   existing_app_api_key=$(extract_php_config_value "$SHARED_CONFIG_PATH" "pdns" "api_key")
   existing_app_hash=$(extract_php_config_value "$SHARED_CONFIG_PATH" "auth" "password_hash")
   existing_app_username=$(extract_php_config_value "$SHARED_CONFIG_PATH" "auth" "username")
+  existing_app_api_token=$(extract_php_config_value "$SHARED_CONFIG_PATH" "api" "token")
   existing_db_name=$(extract_php_config_value "$SHARED_CONFIG_PATH" "database" "name")
   existing_db_user=$(extract_php_config_value "$SHARED_CONFIG_PATH" "database" "username")
   existing_db_password=$(extract_php_config_value "$SHARED_CONFIG_PATH" "database" "password")
@@ -449,6 +452,7 @@ hydrate_existing_configuration() {
       PDNS_DB_USER="$existing_db_user"
       PDNS_DB_PASSWORD="$existing_db_password"
       PDNS_API_KEY="${existing_app_api_key:-$existing_pdns_api_key}"
+      APP_API_TOKEN="${existing_app_api_token:-$APP_API_TOKEN}"
       APP_PASSWORD_HASH="$existing_app_hash"
       APP_PASSWORD=""
       log "Using the existing panel/database/API settings from shared config.php. Set APP_CONFIG_OVERWRITE=1 if you want to rotate them."
@@ -465,6 +469,9 @@ hydrate_existing_configuration() {
   fi
   if [[ -z "$APP_PASSWORD_HASH" ]]; then
     APP_PASSWORD_HASH="${existing_app_hash:-}"
+  fi
+  if [[ -z "$APP_API_TOKEN" ]]; then
+    APP_API_TOKEN="${existing_app_api_token:-}"
   fi
 }
 
@@ -487,6 +494,9 @@ ensure_secrets() {
   fi
   if [[ -z "$PDNS_API_KEY" ]]; then
     PDNS_API_KEY=$(generate_hex_secret 24)
+  fi
+  if [[ -z "$APP_API_TOKEN" ]]; then
+    APP_API_TOKEN=$(generate_hex_secret 24)
   fi
   if [[ -z "$APP_PASSWORD_HASH" && "$PRESERVE_APP_CONFIG" != "1" ]]; then
     if [[ -z "$APP_PASSWORD" ]]; then
@@ -631,6 +641,13 @@ return [
         'session_absolute_timeout' => ${APP_SESSION_ABSOLUTE_TIMEOUT},
     ],
 
+    'api' => [
+        'enabled' => true,
+        'token' => $(php_quote "$APP_API_TOKEN"),
+        'token_label' => 'api-token',
+        'allow_session_auth' => true,
+    ],
+
     'pdns' => [
         'base_url' => $(php_quote "$(build_url "http" "$PDNS_API_BIND" "$PDNS_API_PORT" "/api/v1")"),
         'server_id' => 'localhost',
@@ -747,18 +764,21 @@ detect_panel_url() {
 }
 
 write_credentials_file() {
-  local panel_url
+  local panel_url app_api_url
   panel_url=$(detect_panel_url)
+  app_api_url=$(build_url "$(if is_true "$APP_ENABLE_HTTPS"; then printf 'https'; else printf 'http'; fi)" "$(if [[ "$APP_SERVER_NAME" != "_" ]]; then printf '%s' "$APP_SERVER_NAME"; else hostname -I 2>/dev/null | awk '{print $1}'; fi)" "$(if is_true "$APP_ENABLE_HTTPS"; then printf '%s' "$APP_HTTPS_PORT"; else printf '%s' "$APP_HTTP_PORT"; fi)" "/api/v1")
   log "Writing deployment credentials to ${CREDENTIALS_FILE}"
   {
     printf '%s\n\n' "${APP_NAME} deployment details"
     printf 'Panel URL: %s\n' "$panel_url"
+    printf 'Application API URL: %s\n' "$app_api_url"
     printf 'Panel username: %s\n' "$APP_USERNAME"
     if [[ -n "$APP_PASSWORD" ]]; then
       printf 'Panel password: %s\n' "$APP_PASSWORD"
     else
       printf 'Panel password: preserved existing hash in shared config.php (plain password unavailable)\n'
     fi
+    printf 'Application API bearer token: %s\n' "$APP_API_TOKEN"
     printf 'PowerDNS API URL: %s\n' "$(build_url "http" "$PDNS_API_BIND" "$PDNS_API_PORT" "/api/v1")"
     printf 'PowerDNS API key: %s\n' "$PDNS_API_KEY"
     printf 'MariaDB database: %s\n' "$PDNS_DB_NAME"
@@ -1372,8 +1392,9 @@ PY
 }
 
 print_summary() {
-  local panel_url
+  local panel_url app_api_url
   panel_url=$(detect_panel_url)
+  app_api_url=$(build_url "$(if is_true "$APP_ENABLE_HTTPS"; then printf 'https'; else printf 'http'; fi)" "$(if [[ "$APP_SERVER_NAME" != "_" ]]; then printf '%s' "$APP_SERVER_NAME"; else hostname -I 2>/dev/null | awk '{print $1}'; fi)" "$(if is_true "$APP_ENABLE_HTTPS"; then printf '%s' "$APP_HTTPS_PORT"; else printf '%s' "$APP_HTTP_PORT"; fi)" "/api/v1")
   cat <<SUMMARY
 
 ${APP_NAME} deployment completed successfully.
@@ -1391,11 +1412,12 @@ Paths:
 
 Endpoints:
   Panel            : ${panel_url}
+  App API          : ${app_api_url}
   PowerDNS API     : $(build_url "http" "$PDNS_API_BIND" "$PDNS_API_PORT" "/api/v1")
 
 Notes:
   - The PowerDNS API is bound locally for the PHP panel running on this same server.
-  - Use the credentials file above to retrieve the generated panel password and API key.
+  - Use the credentials file above to retrieve the generated panel password, app API bearer token, and PowerDNS API key.
   - Readiness      : ${PANEL_VERIFY_NOTE}
   - Add your DNS zones in the panel, then point your registrar glue/NS records to this server.
 SUMMARY

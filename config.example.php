@@ -16,6 +16,15 @@ return [
         'session_absolute_timeout' => 43200,
     ],
 
+    'api' => [
+        'enabled' => true,
+        // Use this token in: Authorization: Bearer <token>
+        // Leave allow_session_auth enabled if you want browser sessions to access /api/v1/* too.
+        'token' => 'CHANGE_ME',
+        'token_label' => 'api-token',
+        'allow_session_auth' => true,
+    ],
+
     'pdns' => [
         // Same-server default used by the installer.
         'base_url' => 'http://127.0.0.1:8081/api/v1',

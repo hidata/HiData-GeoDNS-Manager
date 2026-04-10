@@ -2,6 +2,21 @@
 
 declare(strict_types=1);
 
+final class ApiException extends RuntimeException
+{
+    public int $statusCode;
+    public string $errorCode;
+    public array $details;
+
+    public function __construct(int $statusCode, string $message, string $errorCode = 'api_error', array $details = [], ?Throwable $previous = null)
+    {
+        parent::__construct($message, 0, $previous);
+        $this->statusCode = $statusCode;
+        $this->errorCode = $errorCode;
+        $this->details = $details;
+    }
+}
+
 /**
  * HiData GeoDNS Manager
  * Single-file PHP panel for managing PowerDNS zones and RRsets on the same host.
@@ -34,6 +49,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', '0');
 date_default_timezone_set((string)($config['app']['timezone'] ?? 'Asia/Tehran'));
 validateConfigOrFail($config);
+$apiRequestPath = resolveApiRequestPath();
 
 $security = $config['security'] ?? [];
 $sessionName = (string)($security['session_name'] ?? 'HIDATA_PDNS');
@@ -51,7 +67,7 @@ session_set_cookie_params([
 ]);
 session_start();
 resolveUiLocale();
-enforceSessionTimeout($config);
+enforceSessionTimeout($config, $apiRequestPath !== null);
 
 sendSecurityHeaders($config, $isHttps);
 bootstrapStorage($config);
@@ -59,12 +75,34 @@ bootstrapGeoRuleStorage($config);
 
 if (!isClientIpAllowed($config)) {
     http_response_code(403);
+    if ($apiRequestPath !== null) {
+        respondJson([
+            'ok' => false,
+            'error' => [
+                'code' => 'access_denied',
+                'message' => 'Your IP address is not allowed to access this application.',
+            ],
+        ], 403);
+    }
     renderFatalPage('Access denied', 'Your IP address is not allowed to access this panel.');
 }
 
 if (($security['require_https'] ?? false) && !$isHttps) {
     http_response_code(403);
+    if ($apiRequestPath !== null) {
+        respondJson([
+            'ok' => false,
+            'error' => [
+                'code' => 'https_required',
+                'message' => 'This application is configured to require HTTPS.',
+            ],
+        ], 403);
+    }
     renderFatalPage('HTTPS required', 'This panel is configured to require HTTPS.');
+}
+
+if ($apiRequestPath !== null) {
+    handleApiRequest($config, $apiRequestPath);
 }
 
 $flash = $_SESSION['flash'] ?? null;
@@ -151,6 +189,14 @@ function validateConfigOrFail(array $config): void
         $errors[] = 'auth.password_hash is required.';
     } elseif ((password_get_info($passwordHash)['algo'] ?? null) === null) {
         $errors[] = 'auth.password_hash must be generated with password_hash().';
+    }
+
+    $api = $config['api'] ?? [];
+    if (($api['allow_session_auth'] ?? true) !== true) {
+        $apiToken = trim((string)($api['token'] ?? ''));
+        if ($apiToken === '' || $apiToken === 'CHANGE_ME') {
+            $errors[] = 'api.token must be configured when api.allow_session_auth is false.';
+        }
     }
 
     $baseUrl = trim((string)($config['pdns']['base_url'] ?? ''));
@@ -350,6 +396,38 @@ function requestHeader(string $key): string
     return trim((string)($_SERVER[$key] ?? ''));
 }
 
+function resolveApiRequestPath(): ?string
+{
+    $candidates = [];
+
+    $pathInfo = trim((string)($_SERVER['PATH_INFO'] ?? ''));
+    if ($pathInfo !== '') {
+        $candidates[] = $pathInfo;
+    }
+
+    $requestPath = (string)(parse_url((string)($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH) ?? '/');
+    $candidates[] = $requestPath;
+
+    $scriptName = '/' . ltrim(trim((string)($_SERVER['SCRIPT_NAME'] ?? '/index.php')), '/');
+    foreach ($candidates as $candidate) {
+        $normalized = '/' . ltrim(trim((string)$candidate), '/');
+        if (str_starts_with($normalized, '/index.php/')) {
+            $normalized = substr($normalized, strlen('/index.php'));
+        } elseif ($scriptName !== '/' && str_starts_with($normalized, $scriptName . '/')) {
+            $normalized = substr($normalized, strlen($scriptName));
+        }
+
+        if ($normalized === '/api/v1') {
+            return '/';
+        }
+        if (str_starts_with($normalized, '/api/v1/')) {
+            return substr($normalized, strlen('/api/v1'));
+        }
+    }
+
+    return null;
+}
+
 function isHttpsRequest(array $config): bool
 {
     if (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') {
@@ -531,7 +609,7 @@ function handleLogout(array $config): never
     redirect('index.php');
 }
 
-function enforceSessionTimeout(array $config): void
+function enforceSessionTimeout(array $config, bool $apiRequest = false): void
 {
     if (empty($_SESSION['auth']['username'])) {
         return;
@@ -547,9 +625,27 @@ function enforceSessionTimeout(array $config): void
         ($absoluteTimeout > 0 && $now - (int)($auth['logged_in_at'] ?? 0) > $absoluteTimeout)
     ) {
         resetSession();
+        if ($apiRequest) {
+            return;
+        }
         $_SESSION['flash'] = ['type' => 'info', 'message' => 'Your session expired. Please sign in again.'];
         redirect('index.php');
     }
+}
+
+function setAuditActor(string $username): void
+{
+    $GLOBALS['hidata_audit_actor'] = trim($username);
+}
+
+function currentAuditActor(): string
+{
+    $actor = trim((string)($GLOBALS['hidata_audit_actor'] ?? ''));
+    if ($actor !== '') {
+        return $actor;
+    }
+
+    return (string)($_SESSION['auth']['username'] ?? 'unknown');
 }
 
 function resetSession(): void
@@ -663,12 +759,7 @@ function handleMutation(array $config): never
             case 'delete_zone':
                 guardZoneDeletionAllowed($config);
                 $zoneName = requirePostedZoneName();
-                $zone = fetchZone($config, $zoneName);
-                guardWritableZone($config, $zone);
-                backupZoneSnapshot($config, (string)$zone['id'], 'delete');
-                pdnsRequest($config, 'DELETE', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']));
-                deleteGeoRulesForZone($config, (string)$zone['name']);
-                audit($config, 'delete_zone', ['zone' => $zone['name']]);
+                deleteZoneAndGeoRules($config, $zoneName);
                 $_SESSION['flash'] = ['type' => 'success', 'message' => 'Domain deleted successfully.'];
                 redirect('index.php');
 
@@ -957,34 +1048,79 @@ function zoneUrl(string $zoneName): string
     return 'index.php?zone=' . urlencode(rtrim(ensureTrailingDot($zoneName), '.'));
 }
 
-function createZoneFromPost(array $config): array
+function normalizeStringListInput($input): array
 {
-    $zoneName = requirePostedZoneName();
-    $kind = canonicalZoneKind((string)($_POST['zone_kind'] ?? 'Native'));
+    if (is_array($input)) {
+        $values = [];
+        foreach ($input as $item) {
+            if (!is_scalar($item)) {
+                continue;
+            }
+            $value = trim((string)$item);
+            if ($value !== '') {
+                $values[] = $value;
+            }
+        }
+        return $values;
+    }
+
+    return parseTextareaLines((string)$input);
+}
+
+function inputToBool($value, bool $default = false): bool
+{
+    if ($value === null) {
+        return $default;
+    }
+    if (is_bool($value)) {
+        return $value;
+    }
+    if (is_int($value) || is_float($value)) {
+        return (bool)$value;
+    }
+
+    $normalized = strtolower(trim((string)$value));
+    if ($normalized === '') {
+        return $default;
+    }
+    if (in_array($normalized, ['1', 'true', 'yes', 'on'], true)) {
+        return true;
+    }
+    if (in_array($normalized, ['0', 'false', 'no', 'off'], true)) {
+        return false;
+    }
+
+    return $default;
+}
+
+function createZoneFromInput(array $config, array $input): array
+{
+    $zoneName = apiZoneSegmentToName((string)($input['zone_name'] ?? $input['name'] ?? ''));
+    $kind = canonicalZoneKind((string)($input['zone_kind'] ?? $input['kind'] ?? 'Native'));
     $payload = [
         'name' => $zoneName,
         'kind' => $kind,
     ];
 
-    $account = trim((string)($_POST['account'] ?? ''));
+    $account = trim((string)($input['account'] ?? ''));
     if ($account !== '') {
         $payload['account'] = $account;
     }
 
     if (isSecondaryLikeKind($kind)) {
-        $masters = parseTextareaLines((string)($_POST['masters'] ?? ''));
+        $masters = normalizeStringListInput($input['masters'] ?? []);
         if ($masters === []) {
             throw new RuntimeException('Secondary-style zones require at least one master server.');
         }
         $payload['masters'] = $masters;
     } else {
-        $nameservers = array_map('normalizeHostnameTarget', parseTextareaLines((string)($_POST['nameservers'] ?? '')));
+        $nameservers = array_map('normalizeHostnameTarget', normalizeStringListInput($input['nameservers'] ?? []));
         if ($nameservers === []) {
             throw new RuntimeException('Provide at least one authoritative nameserver for the new zone.');
         }
         $payload['nameservers'] = $nameservers;
-        $payload['dnssec'] = !empty($_POST['dnssec']);
-        $payload['api_rectify'] = !empty($_POST['api_rectify']);
+        $payload['dnssec'] = inputToBool($input['dnssec'] ?? true, true);
+        $payload['api_rectify'] = inputToBool($input['api_rectify'] ?? true, true);
     }
 
     $zone = pdnsRequest($config, 'POST', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones', $payload);
@@ -993,6 +1129,22 @@ function createZoneFromPost(array $config): array
     }
 
     audit($config, 'create_zone', ['zone' => $zone['name'], 'kind' => $kind]);
+    return $zone;
+}
+
+function createZoneFromPost(array $config): array
+{
+    return createZoneFromInput($config, $_POST);
+}
+
+function deleteZoneAndGeoRules(array $config, string $zoneName): array
+{
+    $zone = fetchZone($config, $zoneName);
+    guardWritableZone($config, $zone);
+    backupZoneSnapshot($config, (string)$zone['id'], 'delete');
+    pdnsRequest($config, 'DELETE', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']));
+    deleteGeoRulesForZone($config, (string)$zone['name']);
+    audit($config, 'delete_zone', ['zone' => $zone['name']]);
     return $zone;
 }
 
@@ -1032,10 +1184,23 @@ function importZoneFileFromPost(array $config): array
     $zone = fetchZone($config, $zoneName);
     guardWritableZone($config, $zone);
 
-    $raw = loadZoneImportTextFromRequest();
-    $result = parseZoneImportText($raw, (string)$zone['name'], [
+    return importZoneTextForZone($config, $zone, [
+        'zone_text' => loadZoneImportTextFromRequest(),
         'include_soa' => !empty($_POST['import_soa']),
         'include_ns' => !empty($_POST['import_ns']),
+    ]);
+}
+
+function importZoneTextForZone(array $config, array $zone, array $input): array
+{
+    $raw = trim((string)($input['zone_text'] ?? ''));
+    if ($raw === '') {
+        throw new RuntimeException('Zone text is required for import.');
+    }
+
+    $result = parseZoneImportText($raw, (string)$zone['name'], [
+        'include_soa' => inputToBool($input['include_soa'] ?? false),
+        'include_ns' => inputToBool($input['include_ns'] ?? false),
     ]);
     guardManualRrsetMutationsAgainstGeoRules($config, (string)$zone['name'], $result['rrsets'], 'import_zone_file');
 
@@ -1427,7 +1592,7 @@ function isRecognizedImportRecordType(string $token): bool
 
 function isSupportedImportRecordType(string $type): bool
 {
-    return in_array(strtoupper($type), ['A', 'AAAA', 'CAA', 'CNAME', 'MX', 'NS', 'PTR', 'SOA', 'SPF', 'SRV', 'TXT'], true);
+    return in_array(strtoupper($type), supportedEditableRecordTypes(), true);
 }
 
 function isNameInsideZone(string $fqdn, string $zoneName): bool
@@ -1473,41 +1638,34 @@ function summarizeZoneImportResult(array $result): string
 
 function buildRrsetPayloadFromPost(string $zoneName): array
 {
-    $name = fqdnFromInput((string)($_POST['name'] ?? '@'), $zoneName);
-    $type = strtoupper(trim((string)($_POST['type'] ?? '')));
-    $ttl = (int)($_POST['ttl'] ?? 300);
-    $rawValues = trim((string)($_POST['content'] ?? ''));
+    return buildRrsetPayloadFromInput($zoneName, $_POST);
+}
+
+function supportedEditableRecordTypes(): array
+{
+    return [
+        'A', 'AAAA', 'CAA', 'CNAME', 'DNSKEY', 'DS', 'HTTPS', 'LOC', 'MX', 'NAPTR',
+        'NS', 'PTR', 'RP', 'SOA', 'SPF', 'SRV', 'SSHFP', 'SVCB', 'TLSA', 'TXT', 'URI',
+    ];
+}
+
+function buildRrsetPayloadFromInput(string $zoneName, array $input): array
+{
+    $name = normalizeZoneRecordNameInput((string)($input['name'] ?? '@'), $zoneName);
+    $type = strtoupper(trim((string)($input['type'] ?? '')));
+    $ttl = (int)($input['ttl'] ?? 300);
     if ($type === '') {
         throw new RuntimeException('Record type is required.');
     }
-    if (!in_array($type, manualRecordTypes(), true)) {
+    if (!in_array($type, supportedEditableRecordTypes(), true)) {
         throw new RuntimeException('Unsupported record type for manual editing.');
     }
     if ($ttl < 1 || $ttl > 2147483647) {
         throw new RuntimeException('TTL must be between 1 and 2147483647.');
     }
-    if ($rawValues === '') {
-        throw new RuntimeException('Record content is required.');
-    }
 
-    $lines = preg_split('/\r\n|\r|\n/', $rawValues) ?: [];
-    $records = [];
-    if ($type === 'SOA') {
-        $soaValue = trim(implode(' ', array_values(array_filter(array_map('trim', $lines), static fn(string $line): bool => $line !== ''))));
-        if ($soaValue === '') {
-            throw new RuntimeException('SOA content is required.');
-        }
-        $records[] = ['content' => normalizeRecordContent($type, $soaValue), 'disabled' => false];
-    } else {
-        foreach ($lines as $line) {
-            $line = trim($line);
-            if ($line === '') {
-                continue;
-            }
-            $records[] = ['content' => normalizeRecordContent($type, $line), 'disabled' => false];
-        }
-    }
-
+    $recordsSource = $input['records'] ?? ($input['content'] ?? '');
+    $records = normalizeRrsetRecordsInput($type, $recordsSource);
     if ($records === []) {
         throw new RuntimeException('At least one record value is required.');
     }
@@ -1530,6 +1688,98 @@ function buildRrsetPayloadFromPost(string $zoneName): array
         'changetype' => 'REPLACE',
         'records' => $records,
     ];
+}
+
+function normalizeRrsetRecordsInput(string $type, $input): array
+{
+    $records = [];
+
+    if (is_array($input)) {
+        foreach ($input as $item) {
+            $disabled = false;
+            if (is_array($item)) {
+                $content = trim((string)($item['content'] ?? ''));
+                $disabled = inputToBool($item['disabled'] ?? false);
+            } else {
+                $content = trim((string)$item);
+            }
+            if ($content === '') {
+                continue;
+            }
+            $records[] = [
+                'content' => normalizeRecordContent($type, $content),
+                'disabled' => $disabled,
+            ];
+        }
+
+        return $records;
+    }
+
+    $rawValues = trim((string)$input);
+    if ($rawValues === '') {
+        return [];
+    }
+
+    $lines = preg_split('/\r\n|\r|\n/', $rawValues) ?: [];
+    if ($type === 'SOA') {
+        $soaValue = trim(implode(' ', array_values(array_filter(array_map('trim', $lines), static fn(string $line): bool => $line !== ''))));
+        if ($soaValue === '') {
+            throw new RuntimeException('SOA content is required.');
+        }
+        return [[
+            'content' => normalizeRecordContent($type, $soaValue),
+            'disabled' => false,
+        ]];
+    }
+
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '') {
+            continue;
+        }
+        $records[] = [
+            'content' => normalizeRecordContent($type, $line),
+            'disabled' => false,
+        ];
+    }
+
+    return $records;
+}
+
+function applyZoneRrsetPayload(array $config, array $zone, array $payload, string $action): array
+{
+    guardManualRrsetMutationsAgainstGeoRules($config, (string)$zone['name'], [$payload], $action);
+    backupZoneSnapshot($config, (string)$zone['id'], 'change');
+    pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
+        'rrsets' => [$payload],
+    ]);
+    maybeRectify($config, $zone);
+    audit($config, $action, ['zone' => $zone['name'], 'rrset' => $payload]);
+    return $payload;
+}
+
+function deleteZoneRrset(array $config, array $zone, string $name, string $type): void
+{
+    $name = normalizeZoneRecordNameInput($name, (string)$zone['name']);
+    $type = strtoupper(trim($type));
+    if ($type === '') {
+        throw new RuntimeException('Record type is required for deletion.');
+    }
+
+    guardManualRrsetMutationsAgainstGeoRules($config, (string)$zone['name'], [[
+        'name' => $name,
+        'type' => $type,
+    ]], 'delete_rrset');
+    backupZoneSnapshot($config, (string)$zone['id'], 'change');
+    pdnsRequest($config, 'PATCH', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']), [
+        'rrsets' => [[
+            'name' => $name,
+            'type' => $type,
+            'changetype' => 'DELETE',
+        ]],
+    ]);
+    maybeRectify($config, $zone);
+    audit($config, 'delete_rrset', ['zone' => $zone['name'], 'name' => $name, 'type' => $type]);
 }
 
 function normalizeRecordContent(string $type, string $value): string
@@ -1701,17 +1951,40 @@ function ensureTrailingDot(string $name): string
     return rtrim($name, '.') . '.';
 }
 
-function fqdnFromInput(string $input, string $zoneName): string
+function normalizeZoneRecordNameInput(string $input, string $zoneName): string
 {
     $input = trim($input);
     $zoneName = ensureTrailingDot($zoneName);
+
     if ($input === '' || $input === '@') {
         return $zoneName;
     }
+
     if (str_ends_with($input, '.')) {
-        return $input;
+        $fqdn = ensureTrailingDot($input);
+    } else {
+        $normalizedInput = rtrim($input, '.');
+        $normalizedZone = rtrim($zoneName, '.');
+        $lowerInput = strtolower($normalizedInput);
+        $lowerZone = strtolower($normalizedZone);
+
+        if ($lowerInput === $lowerZone || str_ends_with($lowerInput, '.' . $lowerZone)) {
+            $fqdn = ensureTrailingDot($normalizedInput);
+        } else {
+            $fqdn = $normalizedInput . '.' . $zoneName;
+        }
     }
-    return rtrim($input, '.') . '.' . $zoneName;
+
+    if (!isNameInsideZone($fqdn, $zoneName)) {
+        throw new RuntimeException('Record names must stay inside the selected zone.');
+    }
+
+    return $fqdn;
+}
+
+function fqdnFromInput(string $input, string $zoneName): string
+{
+    return normalizeZoneRecordNameInput($input, $zoneName);
 }
 
 function displayRelativeName(string $fqdn, string $zoneName): string
@@ -1860,9 +2133,19 @@ function normalizeCountryCode(string $countryCode): string
 
 function buildCountryIpSetPayloadFromPost(): array
 {
-    $countryCode = normalizeCountryCode((string)($_POST['country_db_code'] ?? ''));
-    $countryName = trim((string)($_POST['country_db_name'] ?? ''));
-    $cidrs = normalizeCountryCidrList((string)($_POST['country_db_cidrs'] ?? ''));
+    return buildCountryIpSetPayloadFromInput($_POST);
+}
+
+function buildCountryIpSetPayloadFromInput(array $input): array
+{
+    $countryCode = normalizeCountryCode((string)($input['country_db_code'] ?? $input['country_code'] ?? ''));
+    $countryName = trim((string)($input['country_db_name'] ?? $input['country_name'] ?? ''));
+
+    $cidrInput = $input['country_db_cidrs'] ?? $input['cidrs'] ?? '';
+    if (is_array($cidrInput)) {
+        $cidrInput = implode(PHP_EOL, array_map('strval', $cidrInput));
+    }
+    $cidrs = normalizeCountryCidrList((string)$cidrInput);
 
     return [
         'country_code' => $countryCode,
@@ -1972,6 +2255,63 @@ function saveCountryIpSetPayload(array $config, array $payload, ?string $existin
     }
 
     return fetchCountryIpSetByCode($config, (string)$payload['country_code']);
+}
+
+function createCountryIpSetFromInput(array $config, array $input): array
+{
+    $payload = buildCountryIpSetPayloadFromInput($input);
+    $countryIpSet = saveCountryIpSetPayload($config, $payload, null);
+    $syncResult = syncGeoRulesForCountrySetChange($config, (string)$countryIpSet['country_code']);
+
+    audit($config, 'create_country_ip_set', [
+        'country_code' => $countryIpSet['country_code'],
+        'cidr_count' => $countryIpSet['cidr_count'],
+        'synced_sets' => $syncResult['synced_sets'],
+    ]);
+
+    $countryIpSet['synced_sets'] = (int)$syncResult['synced_sets'];
+    return $countryIpSet;
+}
+
+function updateCountryIpSetFromInput(array $config, string $countryCode, array $input): array
+{
+    $payload = buildCountryIpSetPayloadFromInput($input + ['country_code' => $countryCode]);
+    if ($payload['country_code'] !== normalizeCountryCode($countryCode)) {
+        throw new RuntimeException('Country code changes are not supported. Delete and recreate the entry instead.');
+    }
+
+    $countryIpSet = saveCountryIpSetPayload($config, $payload, $countryCode);
+    $syncResult = syncGeoRulesForCountrySetChange($config, (string)$countryIpSet['country_code']);
+
+    audit($config, 'update_country_ip_set', [
+        'country_code' => $countryIpSet['country_code'],
+        'cidr_count' => $countryIpSet['cidr_count'],
+        'synced_sets' => $syncResult['synced_sets'],
+    ]);
+
+    $countryIpSet['synced_sets'] = (int)$syncResult['synced_sets'];
+    return $countryIpSet;
+}
+
+function deleteCountryIpSetByApi(array $config, string $countryCode): array
+{
+    $countryIpSet = fetchCountryIpSetByCode($config, $countryCode);
+    if ((int)$countryIpSet['usage_count'] > 0) {
+        throw new RuntimeException(sprintf(
+            'Country %s is still used by %d GeoDNS rule(s). Update it instead of deleting it.',
+            $countryIpSet['country_code'],
+            (int)$countryIpSet['usage_count']
+        ));
+    }
+
+    $stmt = geoDb($config)->prepare('DELETE FROM hidata_geo_country_sets WHERE country_code = :country_code');
+    $stmt->execute(['country_code' => $countryIpSet['country_code']]);
+
+    audit($config, 'delete_country_ip_set', [
+        'country_code' => $countryIpSet['country_code'],
+    ]);
+
+    return $countryIpSet;
 }
 
 function syncGeoRulesForCountrySetChange(array $config, string $countryCode): array
@@ -2226,46 +2566,56 @@ function syncGeoZoneFromPost(array $config, array $zone): array
     ];
 }
 
-function buildGeoRulePayloadFromPost(array $config, array $zone, ?array $existingRule = null): array
+function syncGeoZoneForApi(array $config, array $zone): array
+{
+    $result = syncGeoZoneFromPost($config, $zone);
+    audit($config, 'sync_geo_zone', [
+        'zone' => $zone['name'],
+        'synced_sets' => $result['synced_sets'],
+    ]);
+    return $result;
+}
+
+function buildGeoRulePayloadFromInput(array $config, array $zone, array $input, ?array $existingRule = null): array
 {
     $zoneName = ensureTrailingDot((string)($zone['name'] ?? ''));
-    $name = trim((string)($_POST['geo_name'] ?? '@'));
+    $name = trim((string)($input['geo_name'] ?? $input['name'] ?? '@'));
     if ($name === '') {
         $name = '@';
     }
-    $fqdn = fqdnFromInput($name, $zoneName);
+    $fqdn = normalizeZoneRecordNameInput($name, $zoneName);
     if (!isNameInsideZone($fqdn, $zoneName)) {
         throw new RuntimeException('GeoDNS rules may only target records inside the selected domain.');
     }
 
-    $recordType = strtoupper(trim((string)($_POST['geo_record_type'] ?? 'A')));
+    $recordType = strtoupper(trim((string)($input['geo_record_type'] ?? $input['record_type'] ?? 'A')));
     if (!in_array($recordType, ['A', 'AAAA'], true)) {
         throw new RuntimeException('GeoDNS rules currently support only A and AAAA answers.');
     }
 
-    $ttl = (int)($_POST['geo_ttl'] ?? defaultGeoRuleTtl($config));
+    $ttl = (int)($input['geo_ttl'] ?? $input['ttl'] ?? defaultGeoRuleTtl($config));
     if ($ttl < 1 || $ttl > 2147483647) {
         throw new RuntimeException('GeoDNS TTL must be between 1 and 2147483647.');
     }
 
-    $countryCodes = normalizeCountryCodeList(
-        (string)($_POST['geo_country_codes'] ?? ''),
-        defaultGeoCountryCodes($config)
-    );
-    $countryAnswers = normalizeGeoAnswerPool(
-        (string)($_POST['geo_country_answers'] ?? ''),
-        $recordType,
-        $config,
-        'country-matched'
-    );
-    $defaultAnswers = normalizeGeoAnswerPool(
-        (string)($_POST['geo_default_answers'] ?? ''),
-        $recordType,
-        $config,
-        'default'
-    );
+    $countryCodeInput = $input['geo_country_codes'] ?? $input['country_codes'] ?? '';
+    if (is_array($countryCodeInput)) {
+        $countryCodeInput = implode(',', array_map('strval', $countryCodeInput));
+    }
+    $countryAnswerInput = $input['geo_country_answers'] ?? $input['country_answers'] ?? '';
+    if (is_array($countryAnswerInput)) {
+        $countryAnswerInput = implode(PHP_EOL, array_map('strval', $countryAnswerInput));
+    }
+    $defaultAnswerInput = $input['geo_default_answers'] ?? $input['default_answers'] ?? '';
+    if (is_array($defaultAnswerInput)) {
+        $defaultAnswerInput = implode(PHP_EOL, array_map('strval', $defaultAnswerInput));
+    }
 
-    $healthCheckPortRaw = trim((string)($_POST['geo_health_check_port'] ?? ''));
+    $countryCodes = normalizeCountryCodeList((string)$countryCodeInput, defaultGeoCountryCodes($config));
+    $countryAnswers = normalizeGeoAnswerPool((string)$countryAnswerInput, $recordType, $config, 'country-matched');
+    $defaultAnswers = normalizeGeoAnswerPool((string)$defaultAnswerInput, $recordType, $config, 'default');
+
+    $healthCheckPortRaw = trim((string)($input['geo_health_check_port'] ?? $input['health_check_port'] ?? ''));
     $healthCheckPort = null;
     if ($healthCheckPortRaw !== '') {
         if (!ctype_digit($healthCheckPortRaw)) {
@@ -2286,11 +2636,87 @@ function buildGeoRulePayloadFromPost(array $config, array $zone, ?array $existin
         'country_answers' => $countryAnswers,
         'default_answers' => $defaultAnswers,
         'health_check_port' => $healthCheckPort,
-        'is_enabled' => !empty($_POST['geo_enabled']),
+        'is_enabled' => inputToBool($input['geo_enabled'] ?? $input['is_enabled'] ?? true, true),
     ];
 
     guardGeoRuleConflicts($config, $zone, $payload, $existingRule);
     return $payload;
+}
+
+function createGeoRuleFromInput(array $config, array $zone, array $input): array
+{
+    $payload = buildGeoRulePayloadFromInput($config, $zone, $input);
+    backupZoneSnapshot($config, (string)$zone['id'], 'geo-create');
+    $rule = saveGeoRulePayload($config, $payload, null);
+    syncGeoRuleSet($config, $zone, (string)$rule['fqdn']);
+    $rule = fetchGeoRuleById($config, (int)$rule['id'], (string)$zone['name']);
+    audit($config, 'create_geo_rule', [
+        'zone' => $zone['name'],
+        'fqdn' => $rule['fqdn'],
+        'record_type' => $rule['record_type'],
+    ]);
+    return $rule;
+}
+
+function updateGeoRuleFromInput(array $config, array $zone, int $ruleId, array $input): array
+{
+    $existingRule = fetchGeoRuleById($config, $ruleId, (string)$zone['name']);
+    $payload = buildGeoRulePayloadFromInput($config, $zone, $input, $existingRule);
+    backupZoneSnapshot($config, (string)$zone['id'], 'geo-update');
+    $rule = saveGeoRulePayload($config, $payload, $existingRule);
+    syncGeoRuleSet($config, $zone, (string)$rule['fqdn']);
+    if ($existingRule['fqdn'] !== $rule['fqdn']) {
+        syncGeoRuleSet($config, $zone, (string)$existingRule['fqdn']);
+    }
+    $rule = fetchGeoRuleById($config, (int)$rule['id'], (string)$zone['name']);
+    audit($config, 'update_geo_rule', [
+        'zone' => $zone['name'],
+        'fqdn' => $rule['fqdn'],
+        'record_type' => $rule['record_type'],
+    ]);
+    return $rule;
+}
+
+function deleteGeoRuleByApi(array $config, array $zone, int $ruleId): array
+{
+    $rule = fetchGeoRuleById($config, $ruleId, (string)$zone['name']);
+    backupZoneSnapshot($config, (string)$zone['id'], 'geo-delete');
+
+    $remainingRules = fetchGeoRulesByFqdn($config, (string)$zone['name'], (string)$rule['fqdn'], (int)$rule['id']);
+    try {
+        applyGeoRuleSetToPowerDns($config, $zone, (string)$rule['fqdn'], $remainingRules);
+        markGeoRuleSetSyncSuccess($config, (string)$zone['name'], (string)$rule['fqdn']);
+    } catch (Throwable $e) {
+        markGeoRuleSetSyncError($config, (string)$zone['name'], (string)$rule['fqdn'], $e->getMessage());
+        throw new RuntimeException('Failed to remove the GeoDNS rule from PowerDNS: ' . $e->getMessage());
+    }
+
+    deleteGeoRuleById($config, (int)$rule['id']);
+    audit($config, 'delete_geo_rule', [
+        'zone' => $zone['name'],
+        'fqdn' => $rule['fqdn'],
+        'record_type' => $rule['record_type'],
+    ]);
+    return $rule;
+}
+
+function syncGeoRuleById(array $config, array $zone, int $ruleId): array
+{
+    $rule = fetchGeoRuleById($config, $ruleId, (string)$zone['name']);
+    backupZoneSnapshot($config, (string)$zone['id'], 'geo-sync');
+    syncGeoRuleSet($config, $zone, (string)$rule['fqdn']);
+    $rule = fetchGeoRuleById($config, (int)$rule['id'], (string)$zone['name']);
+    audit($config, 'sync_geo_rule', [
+        'zone' => $zone['name'],
+        'fqdn' => $rule['fqdn'],
+        'record_type' => $rule['record_type'],
+    ]);
+    return $rule;
+}
+
+function buildGeoRulePayloadFromPost(array $config, array $zone, ?array $existingRule = null): array
+{
+    return buildGeoRulePayloadFromInput($config, $zone, $_POST, $existingRule);
 }
 
 function defaultGeoCountryCodes(array $config): array
@@ -2925,7 +3351,7 @@ function audit(array $config, string $action, array $context = []): void
     $entry = [
         'ts' => gmdate('c'),
         'action' => $action,
-        'user' => $_SESSION['auth']['username'] ?? 'unknown',
+        'user' => currentAuditActor(),
         'ip' => clientIp($config),
         'context' => $context,
     ];
@@ -2986,6 +3412,628 @@ function respondJson(array $payload, int $statusCode = 200): never
     header('Content-Type: application/json; charset=UTF-8');
     echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
+}
+
+function respondApiData($data, int $statusCode = 200, array $meta = []): never
+{
+    $payload = [
+        'ok' => true,
+        'data' => $data,
+    ];
+    if ($meta !== []) {
+        $payload['meta'] = $meta;
+    }
+
+    respondJson($payload, $statusCode);
+}
+
+function respondApiError(ApiException $e): never
+{
+    $payload = [
+        'ok' => false,
+        'error' => [
+            'code' => $e->errorCode,
+            'message' => $e->getMessage(),
+        ],
+    ];
+    if ($e->details !== []) {
+        $payload['error']['details'] = $e->details;
+    }
+
+    respondJson($payload, $e->statusCode);
+}
+
+function guardApiWriteAccess(array $config): void
+{
+    if (($config['features']['read_only'] ?? false) === true) {
+        throw new ApiException(403, 'Read-only mode is enabled. Changes are not allowed.', 'read_only');
+    }
+}
+
+function apiEnsureMethod(string $method, array $allowedMethods): void
+{
+    $normalizedAllowed = array_map(static fn(string $value): string => strtoupper(trim($value)), $allowedMethods);
+    if (in_array($method, $normalizedAllowed, true)) {
+        return;
+    }
+
+    header('Allow: ' . implode(', ', $normalizedAllowed));
+    throw new ApiException(
+        405,
+        'Method not allowed. Use one of: ' . implode(', ', $normalizedAllowed) . '.',
+        'method_not_allowed',
+        ['allowed_methods' => $normalizedAllowed]
+    );
+}
+
+function readJsonRequestBody(bool $allowEmpty = true): array
+{
+    static $cache = null;
+    if (is_array($cache)) {
+        return $cache;
+    }
+
+    $raw = trim((string)file_get_contents('php://input'));
+    if ($raw === '') {
+        if ($allowEmpty) {
+            $cache = [];
+            return $cache;
+        }
+        throw new ApiException(400, 'A JSON request body is required.', 'missing_request_body');
+    }
+
+    try {
+        $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+    } catch (JsonException $e) {
+        throw new ApiException(400, 'The JSON request body is invalid: ' . $e->getMessage(), 'invalid_json', [], $e);
+    }
+
+    if (!is_array($decoded)) {
+        throw new ApiException(400, 'The JSON request body must decode to an object.', 'invalid_json_shape');
+    }
+
+    $cache = $decoded;
+    return $cache;
+}
+
+function requestBearerToken(): string
+{
+    $authorization = requestHeader('HTTP_AUTHORIZATION');
+    if (preg_match('/^\s*Bearer\s+(.+)\s*$/i', $authorization, $matches)) {
+        return trim((string)$matches[1]);
+    }
+
+    return trim(requestHeader('HTTP_X_API_TOKEN'));
+}
+
+function requireApiAuth(array $config): array
+{
+    $apiConfig = $config['api'] ?? [];
+    if (($apiConfig['enabled'] ?? true) !== true) {
+        throw new ApiException(404, 'The application API is disabled.', 'api_disabled');
+    }
+
+    $configuredToken = trim((string)($apiConfig['token'] ?? ''));
+    $providedToken = requestBearerToken();
+    if ($configuredToken !== '' && $configuredToken !== 'CHANGE_ME' && $providedToken !== '' && hash_equals($configuredToken, $providedToken)) {
+        $actor = (string)($apiConfig['token_label'] ?? 'api-token');
+        setAuditActor($actor);
+        return [
+            'auth_type' => 'token',
+            'actor' => $actor,
+            'session_user' => null,
+        ];
+    }
+
+    if (($apiConfig['allow_session_auth'] ?? true) === true && !empty($_SESSION['auth']['username'])) {
+        $_SESSION['auth']['last_seen'] = time();
+        $actor = 'session:' . (string)$_SESSION['auth']['username'];
+        setAuditActor($actor);
+        return [
+            'auth_type' => 'session',
+            'actor' => $actor,
+            'session_user' => (string)$_SESSION['auth']['username'],
+        ];
+    }
+
+    header('WWW-Authenticate: Bearer realm="HiData GeoDNS Manager API"');
+    throw new ApiException(
+        401,
+        'Authentication required. Use an Authorization: Bearer <token> header or an active panel session.',
+        'authentication_required'
+    );
+}
+
+function normalizeApiThrowable(Throwable $e): ApiException
+{
+    if ($e instanceof ApiException) {
+        return $e;
+    }
+
+    $message = trim($e->getMessage());
+    $normalized = strtolower($message);
+    $statusCode = 500;
+    $errorCode = 'internal_error';
+
+    if ($message === '') {
+        $message = 'An unexpected error occurred while handling the API request.';
+    }
+
+    foreach ([
+        ['needle' => 'not found', 'status' => 404, 'code' => 'not_found'],
+        ['needle' => 'disabled', 'status' => 403, 'code' => 'forbidden'],
+        ['needle' => 'blocked', 'status' => 403, 'code' => 'forbidden'],
+        ['needle' => 'not allowed', 'status' => 403, 'code' => 'forbidden'],
+        ['needle' => 'required', 'status' => 422, 'code' => 'validation_error'],
+        ['needle' => 'invalid', 'status' => 422, 'code' => 'validation_error'],
+        ['needle' => 'unsupported', 'status' => 422, 'code' => 'validation_error'],
+        ['needle' => 'already exists', 'status' => 409, 'code' => 'conflict'],
+        ['needle' => 'already has', 'status' => 409, 'code' => 'conflict'],
+        ['needle' => 'must be', 'status' => 422, 'code' => 'validation_error'],
+        ['needle' => 'at least', 'status' => 422, 'code' => 'validation_error'],
+    ] as $rule) {
+        if (str_contains($normalized, $rule['needle'])) {
+            $statusCode = (int)$rule['status'];
+            $errorCode = (string)$rule['code'];
+            break;
+        }
+    }
+
+    return new ApiException($statusCode, $message, $errorCode, [], $e);
+}
+
+function handleApiRequest(array $config, string $routePath): never
+{
+    try {
+        $segments = array_values(array_filter(array_map('rawurldecode', explode('/', trim($routePath, '/'))), static fn(string $segment): bool => $segment !== ''));
+        $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+
+        if ($segments === ['health']) {
+            apiEnsureMethod($method, ['GET']);
+            respondApiData([
+                'status' => 'ok',
+                'app' => (string)($config['app']['name'] ?? 'HiData GeoDNS Manager'),
+                'time' => gmdate('c'),
+            ]);
+        }
+
+        $auth = requireApiAuth($config);
+        if ($segments === []) {
+            apiEnsureMethod($method, ['GET']);
+            respondApiData([
+                'name' => (string)($config['app']['name'] ?? 'HiData GeoDNS Manager'),
+                'version' => 'v1',
+                'auth' => $auth,
+                'endpoints' => [
+                    '/api/v1/me',
+                    '/api/v1/zones',
+                    '/api/v1/zones/{zone}',
+                    '/api/v1/zones/{zone}/rrsets',
+                    '/api/v1/zones/{zone}/geodns/rules',
+                    '/api/v1/country-ip-sets',
+                ],
+                'documentation' => 'See API.md in the project root for full request and response details.',
+            ]);
+        }
+
+        if ($segments === ['me']) {
+            apiEnsureMethod($method, ['GET']);
+            respondApiData($auth);
+        }
+
+        if (($segments[0] ?? '') === 'zones') {
+            handleZoneApiRequest($config, $method, array_slice($segments, 1));
+        }
+
+        if (($segments[0] ?? '') === 'country-ip-sets') {
+            handleCountryIpSetApiRequest($config, $method, array_slice($segments, 1));
+        }
+
+        throw new ApiException(404, 'API endpoint not found.', 'not_found');
+    } catch (Throwable $e) {
+        respondApiError(normalizeApiThrowable($e));
+    }
+}
+
+function handleZoneApiRequest(array $config, string $method, array $segments): never
+{
+    if ($segments === []) {
+        if ($method === 'GET') {
+            $zoneSearch = trim((string)($_GET['zone_search'] ?? ''));
+            $zones = fetchZones($config);
+            if ($zoneSearch !== '') {
+                $needle = mb_strtolower($zoneSearch);
+                $zones = array_values(array_filter($zones, static function (array $zone) use ($needle): bool {
+                    $name = mb_strtolower((string)($zone['name'] ?? ''));
+                    $account = mb_strtolower((string)($zone['account'] ?? ''));
+                    return str_contains($name, $needle) || str_contains($account, $needle);
+                }));
+            }
+
+            respondApiData([
+                'zones' => array_map('apiSerializeZoneSummary', $zones),
+                'count' => count($zones),
+            ]);
+        }
+
+        apiEnsureMethod($method, ['POST']);
+        guardApiWriteAccess($config);
+        guardZoneCreationAllowed($config);
+        $input = readJsonRequestBody(false);
+        $zone = createZoneFromInput($config, $input);
+        respondApiData([
+            'zone' => apiSerializeZoneSummary($zone),
+        ], 201);
+    }
+
+    $zoneName = apiZoneSegmentToName((string)$segments[0]);
+
+    if (count($segments) === 1) {
+        if ($method === 'GET') {
+            $zone = fetchZone($config, $zoneName);
+            $geoRules = fetchGeoRulesForZone($config, $zoneName);
+            $geoRuleGroups = groupGeoRulesByFqdn($geoRules);
+            $rrsets = filterVisibleZoneRrsets($zone['rrsets'] ?? [], $geoRuleGroups);
+            $recordFilter = trim((string)($_GET['record_filter'] ?? ''));
+            $rrsets = filterZoneRrsetsBySearch($rrsets, $recordFilter);
+
+            respondApiData([
+                'zone' => apiSerializeZoneSummary($zone),
+                'metrics' => [
+                    'rrset_count' => count($rrsets),
+                    'record_count' => apiCountRrsetRecords($rrsets),
+                    'geo_rule_count' => count($geoRules),
+                ],
+                'rrsets' => array_map(static fn(array $rrset): array => apiSerializeRrset($rrset, (string)$zone['name']), $rrsets),
+                'geo_rules' => array_values($geoRules),
+            ]);
+        }
+
+        apiEnsureMethod($method, ['DELETE']);
+        guardApiWriteAccess($config);
+        guardZoneDeletionAllowed($config);
+        $zone = deleteZoneAndGeoRules($config, $zoneName);
+        respondApiData([
+            'message' => 'Domain deleted successfully.',
+            'zone' => apiSerializeZoneSummary($zone),
+        ]);
+    }
+
+    if (($segments[1] ?? '') === 'export') {
+        apiEnsureMethod($method, ['GET']);
+        $zone = fetchZone($config, $zoneName);
+        $export = pdnsRequest(
+            $config,
+            'GET',
+            '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']) . '/export',
+            null,
+            'text/plain'
+        );
+        header('Content-Type: text/plain; charset=UTF-8');
+        header('Content-Disposition: inline; filename="' . preg_replace('/[^A-Za-z0-9._-]+/', '_', rtrim((string)$zone['name'], '.')) . '.zone"');
+        echo (string)$export;
+        exit;
+    }
+
+    if (($segments[1] ?? '') === 'rectify') {
+        apiEnsureMethod($method, ['POST']);
+        guardApiWriteAccess($config);
+        $zone = fetchZone($config, $zoneName);
+        guardRectifyAllowed($zone);
+        pdnsRequest($config, 'PUT', '/servers/' . rawurlencode((string)$config['pdns']['server_id']) . '/zones/' . rawurlencode((string)$zone['id']) . '/rectify');
+        audit($config, 'api_rectify_zone', ['zone' => $zone['name']]);
+        respondApiData([
+            'message' => 'Domain rectified successfully.',
+            'zone' => apiSerializeZoneSummary($zone),
+        ]);
+    }
+
+    if (($segments[1] ?? '') === 'import') {
+        apiEnsureMethod($method, ['POST']);
+        guardApiWriteAccess($config);
+        $zone = fetchZone($config, $zoneName);
+        guardWritableZone($config, $zone);
+        $input = readJsonRequestBody(false);
+        $result = importZoneTextForZone($config, $zone, $input);
+        respondApiData([
+            'message' => summarizeZoneImportResult($result),
+            'result' => $result,
+            'zone' => apiSerializeZoneSummary($zone),
+        ]);
+    }
+
+    if (($segments[1] ?? '') === 'rrsets') {
+        handleZoneRrsetApiRequest($config, $method, $zoneName, array_slice($segments, 2));
+    }
+
+    if (($segments[1] ?? '') === 'geodns') {
+        handleZoneGeoDnsApiRequest($config, $method, $zoneName, array_slice($segments, 2));
+    }
+
+    throw new ApiException(404, 'Zone API endpoint not found.', 'not_found');
+}
+
+function handleZoneRrsetApiRequest(array $config, string $method, string $zoneName, array $segments): never
+{
+    $zone = fetchZone($config, $zoneName);
+    $geoRules = fetchGeoRulesForZone($config, $zoneName);
+    $geoRuleGroups = groupGeoRulesByFqdn($geoRules);
+    $visibleRrsets = filterVisibleZoneRrsets($zone['rrsets'] ?? [], $geoRuleGroups);
+
+    if ($segments === []) {
+        if ($method === 'GET') {
+            $recordFilter = trim((string)($_GET['record_filter'] ?? ''));
+            $typeFilter = strtoupper(trim((string)($_GET['type'] ?? '')));
+            $nameFilter = trim((string)($_GET['name'] ?? ''));
+            $rrsets = filterZoneRrsetsBySearch($visibleRrsets, $recordFilter);
+            if ($typeFilter !== '') {
+                $rrsets = array_values(array_filter($rrsets, static fn(array $rrset): bool => strtoupper((string)($rrset['type'] ?? '')) === $typeFilter));
+            }
+            if ($nameFilter !== '') {
+                $fqdn = normalizeZoneRecordNameInput($nameFilter, $zoneName);
+                $rrsets = array_values(array_filter($rrsets, static fn(array $rrset): bool => ensureTrailingDot((string)($rrset['name'] ?? '')) === $fqdn));
+            }
+
+            respondApiData([
+                'zone' => apiSerializeZoneSummary($zone),
+                'rrsets' => array_map(static fn(array $rrset): array => apiSerializeRrset($rrset, (string)$zone['name']), $rrsets),
+                'count' => count($rrsets),
+            ]);
+        }
+
+        apiEnsureMethod($method, ['POST']);
+        guardApiWriteAccess($config);
+        guardWritableZone($config, $zone);
+        $input = readJsonRequestBody(false);
+        $payload = buildRrsetPayloadFromInput($zoneName, $input);
+        $rrset = applyZoneRrsetPayload($config, $zone, $payload, 'add_rrset');
+        respondApiData([
+            'message' => 'Record set added successfully.',
+            'rrset' => apiSerializeRrset($rrset, (string)$zone['name']),
+        ], 201);
+    }
+
+    if (count($segments) !== 2) {
+        throw new ApiException(404, 'RRset API endpoint not found.', 'not_found');
+    }
+
+    $type = strtoupper(trim((string)$segments[0]));
+    $name = normalizeZoneRecordNameInput((string)$segments[1], $zoneName);
+    $rrset = findZoneRrsetOrFail($visibleRrsets, $name, $type, $zoneName);
+
+    if ($method === 'GET') {
+        respondApiData([
+            'zone' => apiSerializeZoneSummary($zone),
+            'rrset' => apiSerializeRrset($rrset, (string)$zone['name']),
+        ]);
+    }
+
+    if ($method === 'PUT') {
+        guardApiWriteAccess($config);
+        guardWritableZone($config, $zone);
+        $input = readJsonRequestBody(false);
+        $input['name'] = (string)$segments[1];
+        $input['type'] = $type;
+        $payload = buildRrsetPayloadFromInput($zoneName, $input);
+        $updatedRrset = applyZoneRrsetPayload($config, $zone, $payload, 'update_rrset');
+        respondApiData([
+            'message' => 'Record set updated successfully.',
+            'rrset' => apiSerializeRrset($updatedRrset, (string)$zone['name']),
+        ]);
+    }
+
+    apiEnsureMethod($method, ['DELETE']);
+    guardApiWriteAccess($config);
+    guardWritableZone($config, $zone);
+    deleteZoneRrset($config, $zone, $name, $type);
+    respondApiData([
+        'message' => 'Record set deleted successfully.',
+        'rrset' => apiSerializeRrset($rrset, (string)$zone['name']),
+    ]);
+}
+
+function handleZoneGeoDnsApiRequest(array $config, string $method, string $zoneName, array $segments): never
+{
+    $zone = fetchZone($config, $zoneName);
+
+    if ($segments === ['sync']) {
+        apiEnsureMethod($method, ['POST']);
+        guardApiWriteAccess($config);
+        guardWritableZone($config, $zone);
+        $result = syncGeoZoneForApi($config, $zone);
+        respondApiData([
+            'message' => (string)$result['message'],
+            'result' => $result,
+        ]);
+    }
+
+    if (($segments[0] ?? '') !== 'rules') {
+        throw new ApiException(404, 'GeoDNS API endpoint not found.', 'not_found');
+    }
+
+    if (count($segments) === 1) {
+        if ($method === 'GET') {
+            $rules = fetchGeoRulesForZone($config, $zoneName);
+            respondApiData([
+                'zone' => apiSerializeZoneSummary($zone),
+                'rules' => array_values($rules),
+                'count' => count($rules),
+            ]);
+        }
+
+        apiEnsureMethod($method, ['POST']);
+        guardApiWriteAccess($config);
+        guardWritableZone($config, $zone);
+        $rule = createGeoRuleFromInput($config, $zone, readJsonRequestBody(false));
+        respondApiData([
+            'message' => 'GeoDNS rule created and synced successfully.',
+            'rule' => $rule,
+        ], 201);
+    }
+
+    $ruleId = (int)($segments[1] ?? 0);
+    if ($ruleId < 1) {
+        throw new ApiException(422, 'A valid GeoDNS rule id is required.', 'validation_error');
+    }
+
+    if (count($segments) === 3 && $segments[2] === 'sync') {
+        apiEnsureMethod($method, ['POST']);
+        guardApiWriteAccess($config);
+        guardWritableZone($config, $zone);
+        $rule = syncGeoRuleById($config, $zone, $ruleId);
+        respondApiData([
+            'message' => 'GeoDNS rule set synced successfully.',
+            'rule' => $rule,
+        ]);
+    }
+
+    $rule = fetchGeoRuleById($config, $ruleId, $zoneName);
+    if ($method === 'GET') {
+        respondApiData([
+            'zone' => apiSerializeZoneSummary($zone),
+            'rule' => $rule,
+        ]);
+    }
+
+    if ($method === 'PUT') {
+        guardApiWriteAccess($config);
+        guardWritableZone($config, $zone);
+        $updatedRule = updateGeoRuleFromInput($config, $zone, $ruleId, readJsonRequestBody(false));
+        respondApiData([
+            'message' => 'GeoDNS rule updated and synced successfully.',
+            'rule' => $updatedRule,
+        ]);
+    }
+
+    apiEnsureMethod($method, ['DELETE']);
+    guardApiWriteAccess($config);
+    guardWritableZone($config, $zone);
+    $deletedRule = deleteGeoRuleByApi($config, $zone, $ruleId);
+    respondApiData([
+        'message' => 'GeoDNS rule deleted successfully.',
+        'rule' => $deletedRule,
+    ]);
+}
+
+function handleCountryIpSetApiRequest(array $config, string $method, array $segments): never
+{
+    if ($segments === []) {
+        if ($method === 'GET') {
+            $countryIpSets = fetchCountryIpSets($config);
+            respondApiData([
+                'country_ip_sets' => array_values($countryIpSets),
+                'stats' => summarizeCountryIpSets($countryIpSets),
+            ]);
+        }
+
+        apiEnsureMethod($method, ['POST']);
+        guardApiWriteAccess($config);
+        $countryIpSet = createCountryIpSetFromInput($config, readJsonRequestBody(false));
+        respondApiData([
+            'message' => sprintf('Country CIDR database saved for %s.', $countryIpSet['country_code']),
+            'country_ip_set' => $countryIpSet,
+        ], 201);
+    }
+
+    if (count($segments) !== 1) {
+        throw new ApiException(404, 'Country CIDR API endpoint not found.', 'not_found');
+    }
+
+    $countryCode = normalizeCountryCode((string)$segments[0]);
+    if ($method === 'GET') {
+        respondApiData([
+            'country_ip_set' => fetchCountryIpSetByCode($config, $countryCode),
+        ]);
+    }
+
+    if ($method === 'PUT') {
+        guardApiWriteAccess($config);
+        $countryIpSet = updateCountryIpSetFromInput($config, $countryCode, readJsonRequestBody(false));
+        respondApiData([
+            'message' => sprintf('Country CIDR database updated for %s.', $countryIpSet['country_code']),
+            'country_ip_set' => $countryIpSet,
+        ]);
+    }
+
+    apiEnsureMethod($method, ['DELETE']);
+    guardApiWriteAccess($config);
+    $countryIpSet = deleteCountryIpSetByApi($config, $countryCode);
+    respondApiData([
+        'message' => 'Country CIDR database entry deleted successfully.',
+        'country_ip_set' => $countryIpSet,
+    ]);
+}
+
+function apiZoneSegmentToName(string $value): string
+{
+    $zoneName = ensureTrailingDot($value);
+    if ($zoneName === '.') {
+        throw new ApiException(422, 'A valid zone name is required.', 'validation_error');
+    }
+    return $zoneName;
+}
+
+function apiSerializeZoneSummary(array $zone): array
+{
+    $name = ensureTrailingDot((string)($zone['name'] ?? ''));
+
+    return [
+        'id' => (string)($zone['id'] ?? $name),
+        'name' => $name,
+        'display_name' => rtrim($name, '.'),
+        'kind' => (string)($zone['kind'] ?? ''),
+        'serial' => isset($zone['serial']) ? (int)$zone['serial'] : null,
+        'notified_serial' => isset($zone['notified_serial']) ? (int)$zone['notified_serial'] : null,
+        'account' => trim((string)($zone['account'] ?? '')) !== '' ? (string)$zone['account'] : null,
+        'dnssec' => !empty($zone['dnssec']),
+        'api_rectify' => !empty($zone['api_rectify']),
+        'masters' => array_values(array_map('strval', (array)($zone['masters'] ?? []))),
+        'nameservers' => array_values(array_map('strval', (array)($zone['nameservers'] ?? []))),
+        'url' => zoneUrl($name),
+    ];
+}
+
+function apiSerializeRrset(array $rrset, string $zoneName): array
+{
+    $name = ensureTrailingDot((string)($rrset['name'] ?? ''));
+    $records = [];
+    foreach (($rrset['records'] ?? []) as $record) {
+        $records[] = [
+            'content' => (string)($record['content'] ?? ''),
+            'disabled' => (bool)($record['disabled'] ?? false),
+        ];
+    }
+
+    return [
+        'name' => $name,
+        'display_name' => displayRelativeName($name, $zoneName),
+        'type' => strtoupper((string)($rrset['type'] ?? '')),
+        'ttl' => (int)($rrset['ttl'] ?? 0),
+        'record_count' => count($records),
+        'records' => $records,
+    ];
+}
+
+function apiCountRrsetRecords(array $rrsets): int
+{
+    $count = 0;
+    foreach ($rrsets as $rrset) {
+        $count += count($rrset['records'] ?? []);
+    }
+    return $count;
+}
+
+function findZoneRrsetOrFail(array $rrsets, string $name, string $type, string $zoneName): array
+{
+    $name = normalizeZoneRecordNameInput($name, $zoneName);
+    $type = strtoupper(trim($type));
+    foreach ($rrsets as $rrset) {
+        if (ensureTrailingDot((string)($rrset['name'] ?? '')) === $name && strtoupper((string)($rrset['type'] ?? '')) === $type) {
+            return $rrset;
+        }
+    }
+
+    throw new ApiException(404, 'Record set not found.', 'rrset_not_found');
 }
 
 function isAsyncMutationAction(string $action): bool
