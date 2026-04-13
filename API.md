@@ -102,7 +102,7 @@ Example response:
   "ok": true,
   "data": {
     "status": "ok",
-    "app": "IRG GeoDNS Manager",
+    "app": "HiData GeoDNS Manager",
     "time": "2026-04-10T16:33:00+00:00"
   }
 }

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 return [
     'app' => [
-        'name' => 'IRG GeoDNS Manager',
+        'name' => 'HiData GeoDNS Manager',
         'timezone' => 'Asia/Tehran',
     ],
 

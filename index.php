@@ -678,7 +678,7 @@ function renderLoginPage(): never
     $uiDir = currentUiDirection();
 
     echo '<!doctype html><html lang="' . h($uiLocale) . '" dir="' . h($uiDir) . '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-    echo '<title>IRG</title>';
+    echo '<title>HiData</title>';
     echo uiFontHeadLinks();
     echo '<style>' . baseCss() . loginCss() . '</style>';
     echo '</head><body class="login-body">';
@@ -687,7 +687,7 @@ function renderLoginPage(): never
     echo '<section class="login-card">';
     echo '<div class="login-brand">';
     echo '<div class="brand-mark">' . hidataLogoSvg('hidata-logo') . '</div>';
-    echo '<div class="brand-title">IRG</div>';
+    echo '<div class="brand-title">HiData</div>';
     echo '</div>';
     if ($flash) {
         echo renderFlash($flash);
@@ -4993,7 +4993,7 @@ function renderPage(array $data): void
     $canCreateZones = canCreateZones($config);
 
     echo '<!doctype html><html lang="' . h($uiLocale) . '" dir="' . h($uiDir) . '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-    echo '<title>' . h((string)($config['app']['name'] ?? 'IRG GeoDNS Manager')) . '</title>';
+    echo '<title>' . h((string)($config['app']['name'] ?? 'HiData GeoDNS Manager')) . '</title>';
     echo uiFontHeadLinks();
     echo '<style>' . baseCss() . appCss() . '</style>';
     echo '</head><body class="app-body">';
@@ -5002,7 +5002,7 @@ function renderPage(array $data): void
     echo '<div class="sidebar-panel sidebar-brand-panel">';
     echo '<div class="brand">';
     echo '<div class="brand-logo">' . hidataLogoSvg('hidata-logo') . '</div>';
-    echo '<div class="brand-name">IRG</div>';
+    echo '<div class="brand-name">HiData</div>';
     echo '</div>';
     echo '</div>';
 
@@ -5060,7 +5060,7 @@ function renderPage(array $data): void
     echo '<div class="app-stage">';
     echo '<header class="app-header">';
     echo '<div class="app-header-copy">';
-    echo '<h1>' . ($currentZone ? h($currentZoneDisplayName) : 'IRG') . '</h1>';
+    echo '<h1>' . ($currentZone ? h($currentZoneDisplayName) : 'HiData') . '</h1>';
     echo '</div>';
     echo '<div class="app-header-actions">';
     if ($canCreateZones) {
