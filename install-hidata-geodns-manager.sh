@@ -1392,9 +1392,24 @@ PY
 }
 
 print_summary() {
-  local panel_url app_api_url
+  local panel_url app_api_url panel_password_summary
   panel_url=$(detect_panel_url)
   app_api_url=$(build_url "$(if is_true "$APP_ENABLE_HTTPS"; then printf 'https'; else printf 'http'; fi)" "$(if [[ "$APP_SERVER_NAME" != "_" ]]; then printf '%s' "$APP_SERVER_NAME"; else hostname -I 2>/dev/null | awk '{print $1}'; fi)" "$(if is_true "$APP_ENABLE_HTTPS"; then printf '%s' "$APP_HTTPS_PORT"; else printf '%s' "$APP_HTTP_PORT"; fi)" "/api/v1")
+  if [[ -n "$APP_PASSWORD" ]]; then
+    panel_password_summary="$APP_PASSWORD"
+  elif [[ "$PRESERVE_APP_CONFIG" == "1" ]]; then
+    panel_password_summary="preserved existing hash in shared config.php (plain password unavailable)"
+  else
+    panel_password_summary="preconfigured password hash supplied (plain password unavailable)"
+  fi
+
+  if ! is_true "$APP_ENABLE_HTTPS"; then
+    warn "The panel is configured without HTTPS. Enable APP_ENABLE_HTTPS=1 with TLS_CERT_PATH/TLS_KEY_PATH or put the site behind a trusted HTTPS reverse proxy."
+  fi
+  if [[ -z "$APP_ALLOWED_IPS" ]]; then
+    warn "APP_ALLOWED_IPS is empty, so the panel is not IP-restricted at the application layer."
+  fi
+
   cat <<SUMMARY
 
 ${APP_NAME} deployment completed successfully.
@@ -1417,17 +1432,14 @@ Endpoints:
 
 Notes:
   - The PowerDNS API is bound locally for the PHP panel running on this same server.
-  - Use the credentials file above to retrieve the generated panel password, app API bearer token, and PowerDNS API key.
+  - Use the credentials file above to retrieve the app API bearer token, PowerDNS API key, and database credentials.
   - Readiness      : ${PANEL_VERIFY_NOTE}
   - Add your DNS zones in the panel, then point your registrar glue/NS records to this server.
-SUMMARY
 
-  if ! is_true "$APP_ENABLE_HTTPS"; then
-    warn "The panel is configured without HTTPS. Enable APP_ENABLE_HTTPS=1 with TLS_CERT_PATH/TLS_KEY_PATH or put the site behind a trusted HTTPS reverse proxy."
-  fi
-  if [[ -z "$APP_ALLOWED_IPS" ]]; then
-    warn "APP_ALLOWED_IPS is empty, so the panel is not IP-restricted at the application layer."
-  fi
+Credentials:
+  Panel username   : ${APP_USERNAME}
+  Panel password   : ${panel_password_summary}
+SUMMARY
 }
 
 main() {

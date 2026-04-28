@@ -59,7 +59,7 @@ The installer writes deployment details to:
 ```
 
 That file includes the generated panel password, PowerDNS API key, and database credentials.
-It also tells you the final panel URL so you can sign in immediately after the script completes.
+The final installer summary also prints the panel username and generated panel password so you can sign in immediately after the script completes.
 
 ## Common installer options
 

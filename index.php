@@ -4491,9 +4491,6 @@ function uiLocaleOptions(): array
 {
     return [
         'en' => ['label' => 'English (UK)', 'native' => 'English', 'short' => 'EN', 'dir' => 'ltr', 'country' => 'GB'],
-        'zh' => ['label' => 'Chinese', 'native' => '中文', 'short' => '中文', 'dir' => 'ltr', 'country' => 'CN'],
-        'fr' => ['label' => 'French', 'native' => 'français', 'short' => 'FR', 'dir' => 'ltr', 'country' => 'FR'],
-        'ar' => ['label' => 'Arabic', 'native' => 'العربية', 'short' => 'AR', 'dir' => 'rtl', 'country' => 'SA'],
         'fa' => ['label' => 'Persian', 'native' => 'فارسی', 'short' => 'FA', 'dir' => 'rtl', 'country' => 'IR'],
     ];
 }
@@ -5079,6 +5076,7 @@ function renderPage(array $data): void
     echo '<div class="config-row"><span>' . h(t('Client IP')) . '</span><strong>' . h(clientIp($config)) . '</strong></div>';
     echo '<div class="config-row"><span>' . h(t('Mode')) . '</span><strong>' . h(($config['features']['read_only'] ?? false) ? t('Read-only') : t('Read / Write')) . '</strong></div>';
     echo '</div>';
+    echo '<footer class="app-footer">GeoDNS System by <a href="https://hidata.org" target="_blank" rel="noopener noreferrer">HiData</a>. All rights reserved.</footer>';
     echo '</div>';
     echo '</div>';
     echo modalScripts();
@@ -5870,6 +5868,9 @@ tbody tr:last-child td{border-bottom:0}
 .config-row{display:grid;gap:6px;padding:12px 14px;border-radius:16px;background:#fff;border:1px solid #eef2f7}
 .config-row span{font-size:12px;color:#7a889f;text-transform:uppercase;letter-spacing:.08em;font-weight:900}
 .config-row strong{font-size:13px;word-break:break-all}
+.app-footer{padding:0 4px 4px;text-align:center;color:var(--muted);font-size:13px;font-weight:700}
+.app-footer a{color:var(--primary-strong);font-weight:900}
+.app-footer a:hover{text-decoration:underline}
 .modal{position:fixed;inset:0;background:rgba(42,53,71,.28);display:none;align-items:flex-start;justify-content:center;padding:22px;overflow-y:auto;z-index:60}
 .modal.open{display:flex}
 .modal-card{width:min(760px,100%);max-height:calc(100vh - 44px);margin-inline:auto;background:#fff;border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:20px;overflow-y:auto}
