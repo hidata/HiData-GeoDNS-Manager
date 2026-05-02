@@ -44,11 +44,32 @@ The application also exposes a JSON API under `/api/v1`.
 
 Full endpoint documentation, request formats, validation rules, and `curl` examples are available in [API.md](API.md).
 
-## Quick install
+## Quick install on Ubuntu
 
-Run on Ubuntu 22.04 as `root`:
+Run the installer on a fresh or controlled Ubuntu 22.04 server with a `sudo` user.
+
+Download and run only the installer script:
 
 ```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl git
+
+curl -fsSL \
+  https://raw.githubusercontent.com/hidata/HiData-GeoDNS-Manager/main/install-hidata-geodns-manager.sh \
+  -o install-hidata-geodns-manager.sh
+
+sudo bash install-hidata-geodns-manager.sh
+```
+
+Or download the full project first:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates git
+
+git clone https://github.com/hidata/HiData-GeoDNS-Manager.git
+cd HiData-GeoDNS-Manager
+
 sudo bash install-hidata-geodns-manager.sh
 ```
 
